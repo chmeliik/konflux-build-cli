@@ -1,0 +1,6 @@
+/konflux-build-cli
+
+coverage.out
+
+/.vscode
+/.idea

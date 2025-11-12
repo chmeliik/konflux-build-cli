@@ -126,8 +126,6 @@ func TestExpandArrayParameters(t *testing.T) {
 		argv := []string{"subcmd", "--other-flag", "--array-param"}
 		result := ExpandArrayParameters(argv)
 
-		// Bug: when an array parameter has no values, it gets removed but
-		// the subsequent flag also gets skipped due to incorrect loop logic
 		expected := []string{"subcmd", "--other-flag"}
 		g.Expect(result).To(Equal(expected))
 	})

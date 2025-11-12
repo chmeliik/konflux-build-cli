@@ -1,6 +1,7 @@
 package common
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 
@@ -8,6 +9,7 @@ import (
 )
 
 type ResultsWriterInterface interface {
+	CreateResultJson(result any) (string, error)
 	WriteResultString(result, path string) error
 }
 
@@ -29,7 +31,19 @@ func (r *ResultsWriter) WriteResultString(result, path string) error {
 		return fmt.Errorf("failed to write into result file '%s': %w", path, err)
 	}
 
-	l.Logger.Infof("Wrote result into '%s': \n%s", path, result)
+	l.Logger.Debugf("Wrote result into '%s':\n%s", path, result)
 
 	return nil
+}
+
+// CreateResultJson converts a struct with results into JSON string.
+// Mostly used by tasks to output results into stdout.
+// Note, for Tekton results, the JSON must be escaped.
+func (r *ResultsWriter) CreateResultJson(result any) (string, error) {
+	resultJson, err := json.Marshal(result)
+	if err != nil {
+		return "", err
+	}
+
+	return string(resultJson), nil
 }

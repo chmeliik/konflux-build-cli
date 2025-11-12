@@ -34,9 +34,19 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&logLevel, "loglevel", "info", "Set the logging level (debug, info, warn, error, fatal)")
 
 	cobra.OnInitialize(func() {
+		if !rootCmd.Flags().Changed("loglevel") {
+			// Log level parameter was not set, try env var
+			logLevelEnv := os.Getenv("KBC_LOG_LEVEL")
+			if logLevelEnv != "" {
+				logLevel = logLevelEnv
+			}
+		}
 		if err := l.InitLogger(logLevel); err != nil {
 			fmt.Printf("failed to init logger: %s", err.Error())
 			os.Exit(2)
 		}
 	})
+
+	// Add commands
+	rootCmd.AddCommand(imageCmd)
 }

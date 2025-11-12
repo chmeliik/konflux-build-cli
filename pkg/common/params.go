@@ -24,13 +24,13 @@ type Parameter struct {
 // RegisterParameters configures Cobra CLI parameters based on given Parameters data.
 func RegisterParameters(cmd *cobra.Command, paramsConfig map[string]Parameter) {
 	getMessageInvalidParameterDefaultValue := func(p Parameter) string {
-		return fmt.Sprintf("RegisterParameters: parameter '%s' has invalid default value '%v'", p.Name, p.DefaultValue)
+		return fmt.Sprintf("parameter '%s' has invalid default value '%v'", p.Name, p.DefaultValue)
 	}
 	var err error
 
 	for pName, p := range paramsConfig {
 		if pName != p.Name {
-			panic(fmt.Sprintf("RegisterParameters: parameter name '%s' and tag '%s' must be equal", p.Name, pName))
+			panic(fmt.Sprintf("parameter name '%s' and tag '%s' must be equal", p.Name, pName))
 		}
 
 		switch p.TypeKind {
@@ -89,13 +89,17 @@ func RegisterParameters(cmd *cobra.Command, paramsConfig map[string]Parameter) {
 		default:
 			panic("RegisterParameters: unknown parameter type")
 		}
+
+		if p.Required {
+			cmd.MarkFlagRequired(p.Name)
+		}
 	}
 }
 
 // ParseParameters populates parameters structure with provided values based on paramters configuration
 func ParseParameters(cmd *cobra.Command, paramsConfig map[string]Parameter, params interface{}) error {
 	getMessageRequiredParameterMissing := func(p Parameter) string {
-		return fmt.Sprintf("ParseParameters: required parameter '%s' is not set", p.Name)
+		return fmt.Sprintf("required parameter '%s' is not set", p.Name)
 	}
 
 	paramsStruct := reflect.ValueOf(params).Elem()
@@ -233,18 +237,18 @@ func ParseParameters(cmd *cobra.Command, paramsConfig map[string]Parameter, para
 						fieldValue.Set(reflect.ValueOf(val))
 
 					default:
-						panic(fmt.Sprintf("ParseParameters: not supported parameter type '%v' for '%s' parameter", fieldValue.Kind(), paramData.Name))
+						panic(fmt.Sprintf("not supported parameter type '%v' for '%s' parameter", fieldValue.Kind(), paramData.Name))
 					}
 
 					fieldFound = true
 					break
 				} else {
-					panic(fmt.Sprintf("ParseParameters: cannot set value for '%s' field", field.Name))
+					panic(fmt.Sprintf("cannot set value for '%s' field", field.Name))
 				}
 			}
 		}
 		if !fieldFound {
-			panic(fmt.Sprintf("ParseParameters: field with tag '%s' not found in '%s' struct", tag, paramsStructType.Name()))
+			panic(fmt.Sprintf("field with tag '%s' not found in '%s' struct", tag, paramsStructType.Name()))
 		}
 	}
 	return nil
