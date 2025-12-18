@@ -1,6 +1,8 @@
 package common
 
 import (
+	_ "crypto/sha256"
+
 	"github.com/containers/image/v5/docker/reference"
 	go_digest "github.com/opencontainers/go-digest"
 )

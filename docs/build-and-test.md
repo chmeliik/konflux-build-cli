@@ -65,3 +65,8 @@ or for all tests in single package:
 ```bash
 go test ./pkg/commands
 ```
+
+## How to run integration tests
+
+Integration tests are located under `integration_tests` directory.
+Check [integration tests](/docs/integration-tests.md) doc for more information.

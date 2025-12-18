@@ -1,0 +1,323 @@
+package integration_tests_framework
+
+import (
+	"fmt"
+	"os"
+	"path"
+	"strings"
+
+	cliWrappers "github.com/konflux-ci/konflux-build-cli/pkg/cliwrappers"
+	l "github.com/konflux-ci/konflux-build-cli/pkg/logger"
+)
+
+const (
+	ResultsPathInContainer = "/tmp/"
+)
+
+type ContainerStatus int
+
+const (
+	ContainerStatus_NotStarted ContainerStatus = iota
+	ContainerStatus_Running
+	ContainerStatus_Deleted
+)
+
+type TestRunnerContainer struct {
+	ReplaceEntrypoint bool
+
+	name       string
+	image      string
+	workdir    string
+	privileged bool
+	env        map[string]string
+	volumes    map[string]string
+	ports      map[string]string
+	networks   []string
+	results    map[string]string
+
+	executor cliWrappers.CliExecutorInterface
+
+	containerStatus ContainerStatus
+}
+
+func NewTestRunnerContainer(name, image string) *TestRunnerContainer {
+	return &TestRunnerContainer{
+		ReplaceEntrypoint: true,
+
+		executor: cliWrappers.NewCliExecutor(),
+		name:     name,
+		image:    image,
+		env:      make(map[string]string),
+		volumes:  make(map[string]string),
+		ports:    make(map[string]string),
+		results:  make(map[string]string),
+	}
+}
+
+// NewBuildCliRunnerContainer creates NewTestRunnerContainer
+// with additional settings for running the Build CLI.
+func NewBuildCliRunnerContainer(name, image string) *TestRunnerContainer {
+	container := NewTestRunnerContainer(name, image)
+
+	container.AddVolumeWithOptions(GetCliBinPath(), path.Join("/usr/bin/", KonfluxBuildCli), "z")
+	container.AddNetwork("host")
+	if Debug {
+		container.AddPort("2345", "2345")
+	}
+	container.AddEnv("KBC_LOG_LEVEL", "debug")
+
+	return container
+}
+
+func (c *TestRunnerContainer) ensureContainerNotStarted() {
+	if c.containerStatus != ContainerStatus_NotStarted {
+		panic("the operation can be done only before the container is started")
+	}
+}
+
+func (c *TestRunnerContainer) ensureContainerRunning() {
+	if c.containerStatus != ContainerStatus_Running {
+		panic("the operation can be done only on running container")
+	}
+}
+
+func (c *TestRunnerContainer) SetWorkdir(workdir string) {
+	c.ensureContainerNotStarted()
+	c.workdir = workdir
+}
+
+func (c *TestRunnerContainer) AddEnv(key, value string) {
+	c.ensureContainerNotStarted()
+	c.env[key] = value
+}
+
+func (c *TestRunnerContainer) AddVolume(hostPath, containerPath string) {
+	c.ensureContainerNotStarted()
+	c.volumes[hostPath] = containerPath
+}
+
+func (c *TestRunnerContainer) AddVolumeWithOptions(hostPath, containerPath, mountOptions string) {
+	c.ensureContainerNotStarted()
+	c.volumes[hostPath] = containerPath + ":" + mountOptions
+}
+
+func (c *TestRunnerContainer) AddPort(hostPort, containerPort string) {
+	c.ensureContainerNotStarted()
+	c.ports[hostPort] = containerPort
+}
+
+func (c *TestRunnerContainer) AddNetwork(networkName string) {
+	c.ensureContainerNotStarted()
+	c.networks = append(c.networks, networkName)
+}
+
+// ContainerExists checks for container with the same name.
+func (c *TestRunnerContainer) ContainerExists(isRunning bool) (bool, error) {
+	args := []string{"ps", "-q"}
+	if !isRunning {
+		args = append(args, "-a")
+	}
+	args = append(args, "-f", "name="+c.name)
+
+	stdout, stderr, _, err := c.executor.Execute(containerTool, args...)
+	if err != nil {
+		l.Logger.Infof("[stdout]:\n%s\n", stdout)
+		l.Logger.Infof("[stderr]:\n%s\n", stderr)
+		return false, err
+	}
+	return len(stdout) > 0, nil
+}
+
+func (c *TestRunnerContainer) ensureDoesNotExist() error {
+	existRunning, err := c.ContainerExists(true)
+	if err != nil {
+		return err
+	}
+	if existRunning {
+		return c.Delete()
+	}
+
+	existStopped, err := c.ContainerExists(false)
+	if err != nil {
+		return err
+	}
+	if existStopped {
+		return c.Delete()
+	}
+	return nil
+}
+
+func (c *TestRunnerContainer) Start() error {
+	if err := c.ensureDoesNotExist(); err != nil {
+		return err
+	}
+
+	args := []string{"run", "--detach", "--name", c.name}
+	for name, value := range c.env {
+		args = append(args, "-e", name+"="+value)
+	}
+	for hostPath, containerPath := range c.volumes {
+		args = append(args, "-v", hostPath+":"+containerPath)
+	}
+	for hostPort, containerPort := range c.ports {
+		args = append(args, "-p", hostPort+":"+containerPort)
+	}
+	for _, network := range c.networks {
+		args = append(args, "--network", network)
+	}
+	if c.workdir != "" {
+		args = append(args, "--workdir", c.workdir)
+	}
+	if c.privileged {
+		args = append(args, "--privileged")
+	}
+
+	if c.ReplaceEntrypoint {
+		args = append(args, "--entrypoint", "sleep", c.image, "infinity")
+	} else {
+		args = append(args, c.image)
+	}
+
+	stdout, stderr, _, err := c.executor.Execute(containerTool, args...)
+	if err != nil {
+		l.Logger.Infof("[stdout]:\n%s\n", stdout)
+		l.Logger.Infof("[stderr]:\n%s\n", stderr)
+	}
+	c.containerStatus = ContainerStatus_Running
+	return err
+}
+
+func (c *TestRunnerContainer) Delete() error {
+	stdout, stderr, _, err := c.executor.Execute(containerTool, "rm", "-f", c.name)
+	if err != nil {
+		l.Logger.Infof("[stdout]:\n%s\n", stdout)
+		l.Logger.Infof("[stderr]:\n%s\n", stderr)
+	}
+	return err
+}
+
+func (c *TestRunnerContainer) CopyFileIntoContainer(hostPath, containerPath string) error {
+	c.ensureContainerRunning()
+	stdout, stderr, _, err := c.executor.Execute(containerTool, "cp", hostPath, c.name+":"+containerPath)
+	if err != nil {
+		l.Logger.Infof("[stdout]:\n%s\n", stdout)
+		l.Logger.Infof("[stderr]:\n%s\n", stderr)
+	}
+	return err
+}
+
+// GetFileContent reads file inside the container.
+func (c *TestRunnerContainer) GetFileContent(path string) (string, error) {
+	c.ensureContainerRunning()
+	stdout, stderr, _, err := c.executor.Execute(containerTool, "exec", c.name, "cat", path)
+	if err != nil {
+		l.Logger.Infof("[stdout]:\n%s\n", stdout)
+		l.Logger.Infof("[stderr]:\n%s\n", stderr)
+		if strings.Contains(stderr, "No such file or directory") {
+			return "", fmt.Errorf("no such file or directory: '%s'", path)
+		}
+		return "", err
+	}
+	return stdout, nil
+}
+
+func (c *TestRunnerContainer) ExecuteBuildCli(args ...string) error {
+	if Debug {
+		return c.debugBuildCli(args...)
+	}
+	return c.executeBuildCli(KonfluxBuildCli, args...)
+}
+
+func (c *TestRunnerContainer) executeBuildCli(command string, args ...string) error {
+	c.ensureContainerRunning()
+	execArgs := []string{"exec", "-t", c.name}
+	execArgs = append(execArgs, command)
+	execArgs = append(execArgs, args...)
+
+	stdout, stderr, _, err := c.executor.ExecuteWithOutput(containerTool, execArgs...)
+	if err != nil {
+		l.Logger.Infof("[stdout]:\n%s\n", stdout)
+		l.Logger.Infof("[stderr]:\n%s\n", stderr)
+	}
+	return err
+}
+
+func (c *TestRunnerContainer) debugBuildCli(cliArgs ...string) error {
+	c.ensureContainerRunning()
+
+	dlvPath, err := getDlvPath()
+	if err != nil {
+		return err
+	}
+	err = c.CopyFileIntoContainer(dlvPath, "/usr/bin/")
+	if err != nil {
+		return err
+	}
+
+	execArgs := []string{"exec", "-t", c.name}
+	execArgs = append(execArgs, "dlv", "--listen=0.0.0.0:2345", "--headless=true", "--log=true", "--api-version=2", "exec", "/usr/bin/"+KonfluxBuildCli)
+	if len(cliArgs) > 0 {
+		execArgs = append(execArgs, "--")
+		execArgs = append(execArgs, cliArgs...)
+	}
+
+	stdout, stderr, _, err := c.executor.ExecuteWithOutput(containerTool, execArgs...)
+	if err != nil {
+		l.Logger.Infof("[stdout]:\n%s\n", stdout)
+		l.Logger.Infof("[stderr]:\n%s\n", stderr)
+	}
+	return err
+}
+
+func getDlvPath() (string, error) {
+	goPath, isSet := os.LookupEnv("GOPATH")
+	if !isSet {
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		goPath = path.Join(homeDir, "go")
+	}
+	dlvPath := path.Join(goPath, "bin", "dlv")
+	if !FileExists(dlvPath) {
+		return "", fmt.Errorf("dlv is not found")
+	}
+	return dlvPath, nil
+}
+
+// GetTaskResultValue returns result file content from container.
+func (c *TestRunnerContainer) GetTaskResultValue(resultFilePath string) (string, error) {
+	resultValue, err := c.GetFileContent(resultFilePath)
+	if err != nil {
+		if strings.Contains(strings.ToLower(err.Error()), "no such file or directory") {
+			return "", fmt.Errorf("result file '%s' is not created", resultFilePath)
+		}
+		return "", err
+	}
+	return resultValue, nil
+}
+
+func (c *TestRunnerContainer) InjectDockerAuth(registry, login, password string) error {
+	c.ensureContainerRunning()
+
+	authContent, err := GenerateDockerAuthContent(registry, login, password)
+	if err != nil {
+		return err
+	}
+
+	filePath, err := SaveToTempFile(authContent)
+	if err != nil {
+		return err
+	}
+	defer func() { os.Remove(filePath) }()
+
+	dockerDir := "/root/.docker"
+	if err := c.executeBuildCli("mkdir", "-p", dockerDir); err != nil {
+		return err
+	}
+	if err := c.CopyFileIntoContainer(filePath, path.Join(dockerDir, "config.json")); err != nil {
+		return err
+	}
+
+	return nil
+}

@@ -89,10 +89,6 @@ func RegisterParameters(cmd *cobra.Command, paramsConfig map[string]Parameter) {
 		default:
 			panic("RegisterParameters: unknown parameter type")
 		}
-
-		if p.Required {
-			cmd.MarkFlagRequired(p.Name)
-		}
 	}
 }
 
