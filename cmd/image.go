@@ -13,4 +13,5 @@ var imageCmd = &cobra.Command{
 
 func init() {
 	imageCmd.AddCommand(image.ApplyTagsCmd)
+	imageCmd.AddCommand(image.BuildCmd)
 }
