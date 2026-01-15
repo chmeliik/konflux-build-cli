@@ -49,10 +49,11 @@ var BuildParamsConfig = map[string]common.Parameter{
 }
 
 type BuildParams struct {
-	Containerfile string `paramName:"containerfile"`
-	Context       string `paramName:"context"`
-	OutputRef     string `paramName:"output-ref"`
-	Push          bool   `paramName:"push"`
+	Containerfile string   `paramName:"containerfile"`
+	Context       string   `paramName:"context"`
+	OutputRef     string   `paramName:"output-ref"`
+	Push          bool     `paramName:"push"`
+	ExtraArgs     []string // Additional arguments to pass to buildah build
 }
 
 type BuildCliWrappers struct {
@@ -73,13 +74,15 @@ type Build struct {
 	containerfilePath string
 }
 
-func NewBuild(cmd *cobra.Command) (*Build, error) {
+func NewBuild(cmd *cobra.Command, extraArgs []string) (*Build, error) {
 	build := &Build{}
 
 	params := &BuildParams{}
 	if err := common.ParseParameters(cmd, BuildParamsConfig, params); err != nil {
 		return nil, err
 	}
+	// Store any extra arguments passed after -- separator
+	params.ExtraArgs = extraArgs
 	build.Params = params
 
 	if err := build.initCliWrappers(); err != nil {
@@ -145,6 +148,9 @@ func (c *Build) logParams() {
 	l.Logger.Infof("[param] Context: %s", c.Params.Context)
 	l.Logger.Infof("[param] OutputRef: %s", c.Params.OutputRef)
 	l.Logger.Infof("[param] Push: %t", c.Params.Push)
+	if len(c.Params.ExtraArgs) > 0 {
+		l.Logger.Infof("[param] ExtraArgs: %v", c.Params.ExtraArgs)
+	}
 }
 
 func (c *Build) validateParams() error {
@@ -205,6 +211,7 @@ func (c *Build) buildImage() error {
 		Containerfile: c.containerfilePath,
 		ContextDir:    c.Params.Context,
 		OutputRef:     c.Params.OutputRef,
+		ExtraArgs:     c.Params.ExtraArgs,
 	}
 
 	if err := c.CliWrappers.BuildahCli.Build(buildArgs); err != nil {

@@ -39,6 +39,7 @@ type BuildahBuildArgs struct {
 	Containerfile string
 	ContextDir    string
 	OutputRef     string
+	ExtraArgs     []string
 }
 
 func (b *BuildahCli) Build(args *BuildahBuildArgs) error {
@@ -52,7 +53,11 @@ func (b *BuildahCli) Build(args *BuildahBuildArgs) error {
 		return errors.New("output-ref is empty")
 	}
 
-	buildahArgs := []string{"build", "--file", args.Containerfile, "--tag", args.OutputRef, args.ContextDir}
+	buildahArgs := []string{"build", "--file", args.Containerfile, "--tag", args.OutputRef}
+	// Append extra arguments before the context directory
+	buildahArgs = append(buildahArgs, args.ExtraArgs...)
+	// Context directory must be the last argument
+	buildahArgs = append(buildahArgs, args.ContextDir)
 
 	buildahLog.Debugf("Running command:\nbuildah %s", strings.Join(buildahArgs, " "))
 

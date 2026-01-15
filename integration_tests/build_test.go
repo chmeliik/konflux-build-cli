@@ -19,6 +19,7 @@ type BuildParams struct {
 	Containerfile string
 	OutputRef     string
 	Push          bool
+	ExtraArgs     []string
 }
 
 // Public interface for parity with ApplyTags. Not used in these tests directly.
@@ -74,6 +75,11 @@ func runBuild(container *TestRunnerContainer, buildParams BuildParams) error {
 	}
 	if buildParams.Push {
 		args = append(args, "--push")
+	}
+	// Add separator and extra args if provided
+	if len(buildParams.ExtraArgs) > 0 {
+		args = append(args, "--")
+		args = append(args, buildParams.ExtraArgs...)
 	}
 
 	err = container.ExecuteBuildCli(args...)
@@ -195,4 +201,37 @@ LABEL %s="1h"
 	tagExists, err := imageRegistry.CheckTagExistance(imageRepoUrl, tag)
 	Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("failed to check for %s tag existence", tag))
 	Expect(tagExists).To(BeTrue(), fmt.Sprintf("Expected %s to exist in registry", outputRef))
+}
+
+func TestBuild_WithExtraArgs(t *testing.T) {
+	setupGomega(t)
+
+	contextDir := setupTestContext(t)
+
+	writeContainerfile(contextDir, `
+FROM scratch
+LABEL test.label="extra-args-test"
+`)
+
+	outputRef := "localhost/test-image-extra-args:" + GenerateUniqueTag(t)
+
+	buildParams := BuildParams{
+		Context:   contextDir,
+		OutputRef: outputRef,
+		Push:      false,
+		ExtraArgs: []string{"--logfile", "/tmp/kbc-build.log"},
+	}
+
+	container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+	err := runBuild(container, buildParams)
+	Expect(err).ToNot(HaveOccurred())
+
+	// Verify the image exists in buildah's local storage
+	err = container.ExecuteCommand("buildah", "images", outputRef)
+	Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("Image %s should exist in local buildah storage", outputRef))
+
+	// Verify that the logfile was created
+	err = container.ExecuteCommand("test", "-f", "/tmp/kbc-build.log")
+	Expect(err).ToNot(HaveOccurred(), "Expected /tmp/kbc-build.log to exist")
 }

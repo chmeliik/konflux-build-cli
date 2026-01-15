@@ -101,6 +101,37 @@ func TestBuildahCli_Build(t *testing.T) {
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("output-ref is empty"))
 	})
+
+	t.Run("should append extra args before context directory", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedArgs []string
+		executor.executeWithOutput = func(command string, args ...string) (string, string, int, error) {
+			g.Expect(command).To(Equal("buildah"))
+			capturedArgs = args
+			return "", "", 0, nil
+		}
+
+		buildArgs := &cliwrappers.BuildahBuildArgs{
+			Containerfile: containerfile,
+			ContextDir:    contextDir,
+			OutputRef:     outputRef,
+			ExtraArgs:     []string{"--compat-volumes", "--force-rm"},
+		}
+
+		err := buildahCli.Build(buildArgs)
+
+		g.Expect(err).ToNot(HaveOccurred())
+
+		// Verify the command structure
+		g.Expect(capturedArgs[0]).To(Equal("build"))
+		expectArgAndValue(g, capturedArgs, "--file", containerfile)
+		expectArgAndValue(g, capturedArgs, "--tag", outputRef)
+		// Extra args should be present
+		g.Expect(capturedArgs).To(ContainElement("--compat-volumes"))
+		g.Expect(capturedArgs).To(ContainElement("--force-rm"))
+		// Context directory should be the last argument
+		g.Expect(capturedArgs[len(capturedArgs)-1]).To(Equal(contextDir))
+	})
 }
 
 func findDigestFile(args []string) string {

@@ -26,10 +26,13 @@ Examples:
 
   # Build with explicit Containerfile and context
   konflux-build-cli image build -f ./Containerfile -c ./myapp -t quay.io/myorg/myimage:v1.0.0
+
+  # Build with additional buildah arguments
+  konflux-build-cli image build -t quay.io/myorg/myimage:latest -- --compat-volumes --force-rm
 `,
 	Run: func(cmd *cobra.Command, args []string) {
 		l.Logger.Debug("Starting build")
-		build, err := commands.NewBuild(cmd)
+		build, err := commands.NewBuild(cmd, args)
 		if err != nil {
 			l.Logger.Fatal(err)
 		}
