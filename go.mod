@@ -2,7 +2,7 @@ module github.com/konflux-ci/konflux-build-cli
 
 go 1.23.3
 
-toolchain go1.24.6
+toolchain go1.25.6
 
 require (
 	github.com/containers/image/v5 v5.36.2
