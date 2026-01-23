@@ -81,6 +81,23 @@ func TestSearchDockerfileErrorOnEscapingFromSource(t *testing.T) {
 				}
 			},
 		},
+		{
+			name: "escaped from source by ../Dockerfile",
+			searchOpts: DockerfileSearchOpts{
+				SourceDir:  "delay to setup",
+				ContextDir: ".",
+				Dockerfile: "../Dockerfile",
+			},
+			setup: func(t *testing.T, tc *TestCase) {
+				// Directory structure:
+				// /tmp/workdir/source
+				// /tmp/workdir/source/../Dockerfile, where dockerfile is ../Dockerfile
+				opts := &tc.searchOpts
+				workDir := t.TempDir()
+				opts.SourceDir = createDir(t, workDir, opts.SourceDir)
+				writeFile(t, filepath.Join(workDir, "Dockerfile"), dockerfileContent)
+			},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -126,17 +143,15 @@ func TestSearchDockerfileNotFound(t *testing.T) {
 			},
 		},
 		{
-			name: "escaped from source by ../../../../../.../Dockerfile",
+			name: "nonexisting ../Dockerfile",
 			searchOpts: DockerfileSearchOpts{
 				SourceDir:  "delay to setup",
 				ContextDir: ".",
-				Dockerfile: "../../../../Dockerfile",
+				Dockerfile: "../Dockerfile",
 			},
 			setup: func(t *testing.T, tc *TestCase) {
 				opts := &tc.searchOpts
 				opts.SourceDir = t.TempDir()
-				dockerfilePath := filepath.Join(opts.SourceDir, filepath.Base(opts.Dockerfile))
-				writeFile(t, dockerfilePath, dockerfileContent)
 			},
 		},
 	}
