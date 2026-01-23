@@ -7,7 +7,7 @@ import (
 	"os"
 )
 
-const maxFileSize = 1024 * 1024 // 1MiB
+const defaultMaxFileSize = 1024 * 1024 // 1MiB
 
 func FetchFile(fileLocationUrl, filename string, sizeLimit int64) error {
 	resp, err := http.Get(fileLocationUrl)
@@ -21,7 +21,7 @@ func FetchFile(fileLocationUrl, filename string, sizeLimit int64) error {
 
 	effectiveSizeLimit := sizeLimit
 	if sizeLimit == 0 {
-		effectiveSizeLimit = maxFileSize
+		effectiveSizeLimit = defaultMaxFileSize
 	}
 
 	data, err := io.ReadAll(io.LimitReader(resp.Body, effectiveSizeLimit))

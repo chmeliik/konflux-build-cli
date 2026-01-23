@@ -116,7 +116,7 @@ func TestSearchDockerfileErrorOnEscapingFromSource(t *testing.T) {
 			if err == nil {
 				t.Errorf("Expected error for Dockerfile escaped from base directory, but got result: %s", result)
 			}
-			if !strings.Contains(err.Error(), "Dockerfile is escaped from the source directory") {
+			if !strings.Contains(err.Error(), "Dockerfile is outside of the source directory") {
 				t.Errorf("Expected error message about escaping from source directory, got: %v", err)
 			}
 		})
