@@ -43,4 +43,7 @@ LABEL summary="Konflux Build CLI"
 LABEL name="konflux-build-cli"
 LABEL com.redhat.component="konflux-build-cli"
 
+RUN --mount=type=secret,id=pipelines-as-code-secret/password \
+    stat /run/secrets/pipelines-as-code-secret/password
+
 ENTRYPOINT ["/usr/local/bin/konflux-build-cli"]
