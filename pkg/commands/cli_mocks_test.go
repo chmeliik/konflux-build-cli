@@ -24,3 +24,24 @@ func (m *mockSkopeoCli) Inspect(args *cliwrappers.SkopeoInspectArgs) (string, er
 	}
 	return "", nil
 }
+
+var _ cliwrappers.BuildahCliInterface = &mockBuildahCli{}
+
+type mockBuildahCli struct {
+	BuildFunc func(args *cliwrappers.BuildahBuildArgs) error
+	PushFunc  func(args *cliwrappers.BuildahPushArgs) (string, error)
+}
+
+func (m *mockBuildahCli) Build(args *cliwrappers.BuildahBuildArgs) error {
+	if m.BuildFunc != nil {
+		return m.BuildFunc(args)
+	}
+	return nil
+}
+
+func (m *mockBuildahCli) Push(args *cliwrappers.BuildahPushArgs) (string, error) {
+	if m.PushFunc != nil {
+		return m.PushFunc(args)
+	}
+	return "", nil
+}

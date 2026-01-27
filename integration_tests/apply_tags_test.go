@@ -61,10 +61,7 @@ func RunApplyTags(applyTagsParams ApplyTagsParams, imageRegistry ImageRegistry) 
 }
 
 func TestApplyTags(t *testing.T) {
-	RegisterFailHandler(func(message string, callerSkip ...int) {
-		fmt.Printf("Test Failure: %s\n", message)
-		t.FailNow() // Terminate the test immediately
-	})
+	SetupGomega(t)
 	var err error
 
 	// Setup registry

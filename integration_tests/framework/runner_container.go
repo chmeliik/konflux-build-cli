@@ -225,10 +225,10 @@ func (c *TestRunnerContainer) ExecuteBuildCli(args ...string) error {
 	if Debug {
 		return c.debugBuildCli(args...)
 	}
-	return c.executeBuildCli(KonfluxBuildCli, args...)
+	return c.ExecuteCommand(KonfluxBuildCli, args...)
 }
 
-func (c *TestRunnerContainer) executeBuildCli(command string, args ...string) error {
+func (c *TestRunnerContainer) ExecuteCommand(command string, args ...string) error {
 	c.ensureContainerRunning()
 	execArgs := []string{"exec", "-t", c.name}
 	execArgs = append(execArgs, command)
@@ -312,7 +312,7 @@ func (c *TestRunnerContainer) InjectDockerAuth(registry, login, password string)
 	defer func() { os.Remove(filePath) }()
 
 	dockerDir := "/root/.docker"
-	if err := c.executeBuildCli("mkdir", "-p", dockerDir); err != nil {
+	if err := c.ExecuteCommand("mkdir", "-p", dockerDir); err != nil {
 		return err
 	}
 	if err := c.CopyFileIntoContainer(filePath, path.Join(dockerDir, "config.json")); err != nil {
