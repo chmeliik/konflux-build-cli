@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 
 	cliWrappers "github.com/konflux-ci/konflux-build-cli/pkg/cliwrappers"
@@ -311,7 +312,13 @@ func (c *TestRunnerContainer) InjectDockerAuth(registry, login, password string)
 	}
 	defer func() { os.Remove(filePath) }()
 
-	dockerDir := "/root/.docker"
+	execCmd := []string{"exec", "-t", c.name, "bash", "-c", "echo -n $HOME"}
+	homeDir, _, _, err := c.executor.Execute(containerTool, execCmd...)
+	if err != nil {
+		return err
+	}
+
+	dockerDir := filepath.Join(homeDir, ".docker")
 	if err := c.ExecuteCommand("mkdir", "-p", dockerDir); err != nil {
 		return err
 	}
