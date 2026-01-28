@@ -2,10 +2,15 @@ package cliwrappers
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 
 	l "github.com/konflux-ci/konflux-build-cli/pkg/logger"
+)
+
+const (
+	UnsupportedOCIConfigMediaType = "application/vnd.unknown.config.v1+json"
 )
 
 var skopeoLog = l.Logger.WithField("logger", "ScopeoCli")
@@ -135,14 +140,17 @@ func (s *SkopeoCli) Inspect(args *SkopeoInspectArgs) (string, error) {
 
 	retryer := NewRetryer(func() (string, string, int, error) {
 		return s.Executor.Execute("skopeo", scopeoArgs...)
-	}).WithImageRegistryPreset().StopIfOutputContains("unauthorized")
+	}).WithImageRegistryPreset().
+		StopIfOutputContains("unauthorized").
+		// Stop on unsupported config media type
+		StopIfOutputContains(UnsupportedOCIConfigMediaType)
 
 	stdout, stderr, _, err := retryer.Run()
 	if err != nil {
 		skopeoLog.Errorf("skopeo inspect failed: %s", err.Error())
 		skopeoLog.Infof("[stdout]:\n%s", stdout)
 		skopeoLog.Infof("[stderr]:\n%s", stderr)
-		return "", err
+		return "", fmt.Errorf("%w: %s", err, stderr)
 	}
 
 	skopeoLog.Debug("[stdout]:\n" + stdout)

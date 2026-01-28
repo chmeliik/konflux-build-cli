@@ -113,27 +113,9 @@ func (c *ApplyTags) Run() error {
 
 	c.imageByDigest = c.imageName + "@" + c.Params.Digest
 
-	var tagsFromLabel []string
-	if c.Params.LabelWithTags != "" {
-		var err error
-		tagsFromLabel, err = c.retrieveTagsFromImageLabel(c.Params.LabelWithTags)
-		if err != nil {
-			l.Logger.Errorf("failed to retrieve tags from '%s' label value: %s", c.Params.LabelWithTags, err.Error())
-			return err
-		}
-		for _, tag := range tagsFromLabel {
-			if !common.IsImageTagValid(tag) {
-				return fmt.Errorf("tag from label '%s' is invalid", tag)
-			}
-		}
-
-		if len(tagsFromLabel) > 0 {
-			l.Logger.Infof("Additional tags from '%s' image label: %s", c.Params.LabelWithTags, strings.Join(tagsFromLabel, ", "))
-		} else {
-			l.Logger.Warnf("No tags given in '%s' image label", c.Params.LabelWithTags)
-		}
-	} else {
-		l.Logger.Debug("Label with additional tags is not set")
+	tagsFromLabel, err := c.retrieveTagsFromImageLabel(c.Params.LabelWithTags)
+	if err != nil {
+		return err
 	}
 
 	tags := append(c.Params.NewTags, tagsFromLabel...)
@@ -166,7 +148,13 @@ func (c *ApplyTags) logParams() {
 	}
 }
 
+// retrieveTagsFromImageLabel fetches list of tags from the given image label and interprets the results.
 func (c *ApplyTags) retrieveTagsFromImageLabel(labelName string) ([]string, error) {
+	if labelName == "" {
+		l.Logger.Debug("Label with additional tags is not set")
+		return nil, nil
+	}
+
 	inspectArgs := &cliWrappers.SkopeoInspectArgs{
 		ImageRef:   c.imageByDigest,
 		Format:     fmt.Sprintf(`{{ index .Labels "%s" }}`, labelName),
@@ -175,18 +163,40 @@ func (c *ApplyTags) retrieveTagsFromImageLabel(labelName string) ([]string, erro
 	}
 	tagsLabelValue, err := c.CliWrappers.SkopeoCli.Inspect(inspectArgs)
 	if err != nil {
+		if strings.Contains(err.Error(), cliWrappers.UnsupportedOCIConfigMediaType) {
+			// Skip the label with tags for unsupported config media type.
+			// Print warning message and continue.
+			l.Logger.Warnf("unsupported config media type '%s' of input image. Skipping reading %s image label",
+				cliWrappers.UnsupportedOCIConfigMediaType, c.Params.LabelWithTags)
+			return nil, nil
+		}
+		l.Logger.Errorf("failed to retrieve tags from '%s' label value: %s", c.Params.LabelWithTags, err.Error())
 		return nil, err
 	}
 	tagsLabelValue = strings.TrimSpace(tagsLabelValue)
 	l.Logger.Debugf("Tags label value: %s", tagsLabelValue)
 
 	if tagsLabelValue == "" {
+		l.Logger.Warnf("No tags given in '%s' image label", c.Params.LabelWithTags)
 		return nil, nil
 	}
 
 	tagSeparatorRegex := regexp.MustCompile(`[\s,]+`)
-	tags := tagSeparatorRegex.Split(tagsLabelValue, -1)
-	return tags, nil
+	tagsFromLabel := tagSeparatorRegex.Split(tagsLabelValue, -1)
+
+	// Successfully obtained tags from the image label
+	// Validate the obtained tags
+	for _, tag := range tagsFromLabel {
+		if !common.IsImageTagValid(tag) {
+			return nil, fmt.Errorf("tag from label '%s' is invalid", tag)
+		}
+	}
+
+	if len(tagsFromLabel) > 0 {
+		l.Logger.Infof("Additional tags from '%s' image label: %s", c.Params.LabelWithTags, strings.Join(tagsFromLabel, ", "))
+	}
+
+	return tagsFromLabel, nil
 }
 
 func (c *ApplyTags) applyTags(tags []string) error {

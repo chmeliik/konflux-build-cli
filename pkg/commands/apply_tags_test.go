@@ -191,6 +191,7 @@ func Test_retrieveTagsFromImageLabel(t *testing.T) {
 
 	mockSkopeoCli := &mockSkopeoCli{}
 	c := &ApplyTags{
+		Params:        &ApplyTagsParams{LabelWithTags: "label"},
 		CliWrappers:   ApplyTagsCliWrappers{SkopeoCli: mockSkopeoCli},
 		imageByDigest: imageRef,
 	}
@@ -295,6 +296,20 @@ func Test_retrieveTagsFromImageLabel(t *testing.T) {
 		_, err := c.retrieveTagsFromImageLabel(labelName)
 		g.Expect(isScopeoInspectCalled).To(BeTrue())
 		g.Expect(err).To(HaveOccurred())
+	})
+
+	t.Run("should skip tags from label if image has unknown media type in config", func(t *testing.T) {
+		isScopeoInspectCalled := false
+		mockSkopeoCli.InspectFunc = func(args *cliwrappers.SkopeoInspectArgs) (string, error) {
+			isScopeoInspectCalled = true
+			g.Expect(args.ImageRef).To(Equal(imageRef))
+			return "", errors.New("unsupported image-specific operation on artifact with type \"application/vnd.unknown.config.v1+json\"")
+		}
+
+		tags, err := c.retrieveTagsFromImageLabel(labelName)
+		g.Expect(isScopeoInspectCalled).To(BeTrue())
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(tags).To(BeNil())
 	})
 }
 
@@ -520,6 +535,41 @@ func Test_Run(t *testing.T) {
 			g.Expect(args.ImageRef).To(Equal(c.Params.ImageUrl + "@" + c.Params.Digest))
 			g.Expect(args.Format).To(ContainSubstring(labelWithTagsName))
 			return "", nil
+		}
+		scopeoCopyCalledTimes := 0
+		_mockSkopeoCli.CopyFunc = func(args *cliwrappers.SkopeoCopyArgs) error {
+			g.Expect(args.DestinationImage).To(HaveSuffix("tag"))
+			scopeoCopyCalledTimes++
+			return nil
+		}
+		isCreateResultJsonCalled := false
+		_mockResultsWriter.CreateResultJsonFunc = func(result any) (string, error) {
+			isCreateResultJsonCalled = true
+			applyTagsResults, ok := result.(ApplyTagsResults)
+			g.Expect(ok).To(BeTrue())
+			g.Expect(applyTagsResults.Tags).To(Equal([]string{"param-1-tag", "param-2-tag"}))
+			return "", nil
+		}
+
+		err := c.Run()
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(isScopeoInspectCalled).To(BeTrue())
+		g.Expect(scopeoCopyCalledTimes).To(Equal(2))
+		g.Expect(isCreateResultJsonCalled).To(BeTrue())
+	})
+
+	t.Run("should successfully run apply-tags with tags from param and skip tags from label when the image config has unknown media type", func(t *testing.T) {
+		beforeEach()
+		tags := []string{"param-1-tag", "param-2-tag"}
+		const labelWithTagsName = "konflux.additional-tags"
+		c.Params.NewTags = tags
+		c.Params.LabelWithTags = labelWithTagsName
+
+		isScopeoInspectCalled := false
+		_mockSkopeoCli.InspectFunc = func(args *cliwrappers.SkopeoInspectArgs) (string, error) {
+			isScopeoInspectCalled = true
+			g.Expect(args.ImageRef).To(Equal(c.Params.ImageUrl + "@" + c.Params.Digest))
+			return "", errors.New("unsupported image-specific operation on artifact with type \"application/vnd.unknown.config.v1+json\"")
 		}
 		scopeoCopyCalledTimes := 0
 		_mockSkopeoCli.CopyFunc = func(args *cliwrappers.SkopeoCopyArgs) error {
