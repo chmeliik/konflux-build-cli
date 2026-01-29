@@ -81,26 +81,23 @@ func createContainerStorageDir() (string, error) {
 	return tmpDir, nil
 }
 
-// Remove a directory created by createContainerStorageDir,
+// Try to remove a directory created by createContainerStorageDir,
 // and the parent .test-containers-storage directory if empty.
-func removeContainerStorageDir(containerStoragePath string) error {
+// The cleanup is best-effort and ignores errors.
+func removeContainerStorageDir(containerStoragePath string) {
 	// 1. 'chmod -R' to ensure write permissions (container storage often includes read-only files)
-	filepath.WalkDir(containerStoragePath, func(path string, d fs.DirEntry, err error) error {
+	_ = filepath.WalkDir(containerStoragePath, func(path string, d fs.DirEntry, err error) error {
 		// Ignore errors, try to chmod everything if possible
 		os.Chmod(path, 0777)
 		return nil
 	})
 	// 2. 'rm -r'
-	err := os.RemoveAll(containerStoragePath)
-	if err != nil {
-		return err
-	}
+	_ = os.RemoveAll(containerStoragePath)
 
 	// Try to remove the parent .test-containers-storage directory. Will fail if it's not
 	// empty (e.g. a different test process is running in parallel). This is fine. The last
 	// test process that finishes should clean it up successfully.
 	_ = os.Remove(filepath.Dir(containerStoragePath))
-	return nil
 }
 
 // Creates and starts a container for running builds.
