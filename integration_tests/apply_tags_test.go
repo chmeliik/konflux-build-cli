@@ -25,19 +25,9 @@ func RunApplyTags(applyTagsParams ApplyTagsParams, imageRegistry ImageRegistry) 
 	var err error
 
 	container := NewBuildCliRunnerContainer("apply-tags", ApplyTagsImage)
+	defer container.DeleteIfExists()
 
-	if imageRegistry.IsLocal() {
-		container.AddVolumeWithOptions(imageRegistry.GetCaCertPath(), "/etc/pki/tls/certs/ca-custom-bundle.crt", "z")
-	}
-
-	err = container.Start()
-	if err != nil {
-		return err
-	}
-	defer container.Delete()
-
-	login, password := imageRegistry.GetCredentials()
-	err = container.InjectDockerAuth(imageRegistry.GetRegistryDomain(), login, password)
+	err = container.StartWithRegistryIntegration(imageRegistry)
 	if err != nil {
 		return err
 	}

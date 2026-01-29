@@ -42,8 +42,11 @@ type TestRunnerContainer struct {
 	containerStatus ContainerStatus
 }
 
-func NewTestRunnerContainer(name, image string) *TestRunnerContainer {
-	return &TestRunnerContainer{
+// ContainerOption is a functional-style option for configuring TestRunnerContainer.
+type ContainerOption func(*TestRunnerContainer)
+
+func NewTestRunnerContainer(name, image string, opts ...ContainerOption) *TestRunnerContainer {
+	container := &TestRunnerContainer{
 		ReplaceEntrypoint: true,
 
 		executor: cliWrappers.NewCliExecutor(),
@@ -54,12 +57,18 @@ func NewTestRunnerContainer(name, image string) *TestRunnerContainer {
 		ports:    make(map[string]string),
 		results:  make(map[string]string),
 	}
+
+	for _, opt := range opts {
+		opt(container)
+	}
+
+	return container
 }
 
 // NewBuildCliRunnerContainer creates NewTestRunnerContainer
 // with additional settings for running the Build CLI.
-func NewBuildCliRunnerContainer(name, image string) *TestRunnerContainer {
-	container := NewTestRunnerContainer(name, image)
+func NewBuildCliRunnerContainer(name, image string, opts ...ContainerOption) *TestRunnerContainer {
+	container := NewTestRunnerContainer(name, image, opts...)
 
 	container.AddVolumeWithOptions(GetCliBinPath(), path.Join("/usr/bin/", KonfluxBuildCli), "z")
 	container.AddNetwork("host")
@@ -93,9 +102,21 @@ func (c *TestRunnerContainer) SetWorkdir(workdir string) {
 	c.workdir = workdir
 }
 
+func WithWorkdir(workdir string) ContainerOption {
+	return func(c *TestRunnerContainer) {
+		c.SetWorkdir(workdir)
+	}
+}
+
 func (c *TestRunnerContainer) AddEnv(key, value string) {
 	c.ensureContainerNotStarted()
 	c.env[key] = value
+}
+
+func WithEnv(key, value string) ContainerOption {
+	return func(c *TestRunnerContainer) {
+		c.AddEnv(key, value)
+	}
 }
 
 func (c *TestRunnerContainer) AddVolume(hostPath, containerPath string) {
@@ -103,9 +124,21 @@ func (c *TestRunnerContainer) AddVolume(hostPath, containerPath string) {
 	c.volumes[hostPath] = containerPath
 }
 
+func WithVolume(hostPath, containerPath string) ContainerOption {
+	return func(c *TestRunnerContainer) {
+		c.AddVolume(hostPath, containerPath)
+	}
+}
+
 func (c *TestRunnerContainer) AddVolumeWithOptions(hostPath, containerPath, mountOptions string) {
 	c.ensureContainerNotStarted()
 	c.volumes[hostPath] = containerPath + ":" + mountOptions
+}
+
+func WithVolumeWithOptions(hostPath, containerPath, mountOptions string) ContainerOption {
+	return func(c *TestRunnerContainer) {
+		c.AddVolumeWithOptions(hostPath, containerPath, mountOptions)
+	}
 }
 
 func (c *TestRunnerContainer) AddPort(hostPort, containerPort string) {
@@ -113,9 +146,21 @@ func (c *TestRunnerContainer) AddPort(hostPort, containerPort string) {
 	c.ports[hostPort] = containerPort
 }
 
+func WithPort(hostPort, containerPort string) ContainerOption {
+	return func(c *TestRunnerContainer) {
+		c.AddPort(hostPort, containerPort)
+	}
+}
+
 func (c *TestRunnerContainer) AddNetwork(networkName string) {
 	c.ensureContainerNotStarted()
 	c.networks = append(c.networks, networkName)
+}
+
+func WithNetwork(networkName string) ContainerOption {
+	return func(c *TestRunnerContainer) {
+		c.AddNetwork(networkName)
+	}
 }
 
 // ContainerExists checks for container with the same name.
@@ -194,13 +239,40 @@ func (c *TestRunnerContainer) Start() error {
 	return err
 }
 
+// Start the container while injecting the certificates and credentials required to access
+// the image registry.
+//
+// Note that the method may fail to start the container but may also fail *after*
+// starting the container. Use the DeleteIfExists() method for cleanup to handle either case.
+func (c *TestRunnerContainer) StartWithRegistryIntegration(imageRegistry ImageRegistry) error {
+	if imageRegistry.IsLocal() {
+		c.AddVolumeWithOptions(imageRegistry.GetCaCertPath(), "/etc/pki/tls/certs/ca-custom-bundle.crt", "z")
+	}
+	err := c.Start()
+	if err != nil {
+		return err
+	}
+
+	login, password := imageRegistry.GetCredentials()
+	return c.InjectDockerAuth(imageRegistry.GetRegistryDomain(), login, password)
+}
+
 func (c *TestRunnerContainer) Delete() error {
 	stdout, stderr, _, err := c.executor.Execute(containerTool, "rm", "-f", c.name)
-	if err != nil {
+	if err == nil {
+		c.containerStatus = ContainerStatus_Deleted
+	} else {
 		l.Logger.Infof("[stdout]:\n%s\n", stdout)
 		l.Logger.Infof("[stderr]:\n%s\n", stderr)
 	}
 	return err
+}
+
+func (c *TestRunnerContainer) DeleteIfExists() error {
+	if c.containerStatus != ContainerStatus_Running {
+		return nil
+	}
+	return c.Delete()
 }
 
 func (c *TestRunnerContainer) CopyFileIntoContainer(hostPath, containerPath string) error {

@@ -81,14 +81,19 @@ func IsKonfluxCliCompiled() bool {
 	return FileExists(cliBinPath)
 }
 
-func CompileKonfluxCli() error {
-	executor := cliWrappers.NewCliExecutor()
-
+func FindRepoRoot() string {
 	// Handle running from root and test folder
 	var mainGoPath = "main.go"
 	if !FileExists(mainGoPath) {
 		mainGoPath = path.Join("..", mainGoPath)
 	}
+	return path.Dir(mainGoPath)
+}
+
+func CompileKonfluxCli() error {
+	executor := cliWrappers.NewCliExecutor()
+
+	var mainGoPath = path.Join(FindRepoRoot(), "main.go")
 
 	os.Setenv("CGO_ENABLED", "0")
 	os.Setenv("GOOS", "linux")
@@ -290,7 +295,9 @@ func GenerateUniqueTag(t *testing.T) string {
 		t.Fatalf("Failed to generate random tag: %v", err)
 	}
 	randomSuffix := hex.EncodeToString(randomBytes)
-	return fmt.Sprintf("%s-%s", t.Name(), randomSuffix)
+	// Replace slashes with hyphens to make the tag valid for subtests
+	testName := strings.ReplaceAll(t.Name(), "/", "-")
+	return fmt.Sprintf("%s-%s", testName, randomSuffix)
 }
 
 // Registers the Gomega failure handler for the test.
