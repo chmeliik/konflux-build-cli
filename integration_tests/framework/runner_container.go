@@ -307,7 +307,9 @@ func (c *TestRunnerContainer) ExecuteBuildCli(args ...string) error {
 	return c.ExecuteCommand(KonfluxBuildCli, args...)
 }
 
-func (c *TestRunnerContainer) ExecuteCommand(command string, args ...string) error {
+// ExecuteCommandWithOutput executes a command in the container and returns
+// stdout, stderr, and error.
+func (c *TestRunnerContainer) ExecuteCommandWithOutput(command string, args ...string) (string, string, error) {
 	c.ensureContainerRunning()
 	execArgs := []string{"exec", "-t", c.name}
 	execArgs = append(execArgs, command)
@@ -318,6 +320,11 @@ func (c *TestRunnerContainer) ExecuteCommand(command string, args ...string) err
 		l.Logger.Infof("[stdout]:\n%s\n", stdout)
 		l.Logger.Infof("[stderr]:\n%s\n", stderr)
 	}
+	return stdout, stderr, err
+}
+
+func (c *TestRunnerContainer) ExecuteCommand(command string, args ...string) error {
+	_, _, err := c.ExecuteCommandWithOutput(command, args...)
 	return err
 }
 
