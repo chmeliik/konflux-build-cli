@@ -42,12 +42,20 @@ type BuildahBuildArgs struct {
 	ContextDir    string
 	OutputRef     string
 	Secrets       []BuildahSecret
+	Volumes       []BuildahVolume
 	ExtraArgs     []string
 }
 
 type BuildahSecret struct {
 	Src string
 	Id  string
+}
+
+// Represents a buildah --volume argument: HOST-DIR:CONTAINER-DIR[:OPTIONS]
+type BuildahVolume struct {
+	HostDir      string
+	ContainerDir string
+	Options      string
 }
 
 // Check that the build arguments are valid, e.g. required arguments are set.
@@ -61,6 +69,14 @@ func (args *BuildahBuildArgs) Validate() error {
 	}
 	if args.OutputRef == "" {
 		return errors.New("output-ref is empty")
+	}
+	for _, volume := range args.Volumes {
+		if strings.ContainsRune(volume.HostDir, ':') {
+			return fmt.Errorf("':' in volume mount source path: %s", volume.HostDir)
+		}
+		if strings.ContainsRune(volume.ContainerDir, ':') {
+			return fmt.Errorf("':' in volume mount target path: %s", volume.ContainerDir)
+		}
 	}
 	return nil
 }
@@ -96,6 +112,13 @@ func (args *BuildahBuildArgs) MakePathsAbsolute(baseDir string) error {
 		}
 	}
 
+	for i := range args.Volumes {
+		err := ensureAbsolute(&args.Volumes[i].HostDir)
+		if err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
 
@@ -109,6 +132,14 @@ func (b *BuildahCli) Build(args *BuildahBuildArgs) error {
 	for _, secret := range args.Secrets {
 		secretArg := "src=" + secret.Src + ",id=" + secret.Id
 		buildahArgs = append(buildahArgs, "--secret="+secretArg)
+	}
+
+	for _, volume := range args.Volumes {
+		volumeArg := volume.HostDir + ":" + volume.ContainerDir
+		if volume.Options != "" {
+			volumeArg += ":" + volume.Options
+		}
+		buildahArgs = append(buildahArgs, "--volume="+volumeArg)
 	}
 
 	// Append extra arguments before the context directory

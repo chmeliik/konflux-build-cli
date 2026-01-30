@@ -105,6 +105,32 @@ func TestBuildahCli_Build(t *testing.T) {
 		g.Expect(capturedArgs).To(ContainElement("--secret=src=/other/file,id=mysecret_2"))
 	})
 
+	t.Run("should turn Volumes into --volume params", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedArgs []string
+		executor.executeWithOutput = func(command string, args ...string) (string, string, int, error) {
+			g.Expect(command).To(Equal("buildah"))
+			capturedArgs = args
+			return "", "", 0, nil
+		}
+
+		buildArgs := &cliwrappers.BuildahBuildArgs{
+			Containerfile: containerfile,
+			ContextDir:    contextDir,
+			OutputRef:     outputRef,
+			Volumes: []cliwrappers.BuildahVolume{
+				{HostDir: "/host/dir1", ContainerDir: "/container/dir1", Options: ""},
+				{HostDir: "/host/dir2", ContainerDir: "/container/dir2", Options: "ro"},
+			},
+		}
+
+		err := buildahCli.Build(buildArgs)
+		g.Expect(err).ToNot(HaveOccurred())
+
+		g.Expect(capturedArgs).To(ContainElement("--volume=/host/dir1:/container/dir1"))
+		g.Expect(capturedArgs).To(ContainElement("--volume=/host/dir2:/container/dir2:ro"))
+	})
+
 	t.Run("should append extra args before context directory", func(t *testing.T) {
 		buildahCli, executor := setupBuildahCli()
 		var capturedArgs []string
@@ -280,6 +306,9 @@ func TestBuildahBuildArgs_MakePathsAbsolute(t *testing.T) {
 			Secrets: []cliwrappers.BuildahSecret{
 				{Src: "/absolute/path/secret", Id: "secret1"},
 			},
+			Volumes: []cliwrappers.BuildahVolume{
+				{HostDir: "/absolute/path/volume", ContainerDir: "/container/dir", Options: ""},
+			},
 		}
 
 		err := args.MakePathsAbsolute("/base/dir")
@@ -287,6 +316,7 @@ func TestBuildahBuildArgs_MakePathsAbsolute(t *testing.T) {
 		g.Expect(args.Containerfile).To(Equal("/absolute/path/Containerfile"))
 		g.Expect(args.ContextDir).To(Equal("/absolute/path/context"))
 		g.Expect(args.Secrets[0].Src).To(Equal("/absolute/path/secret"))
+		g.Expect(args.Volumes[0].HostDir).To(Equal("/absolute/path/volume"))
 	})
 
 	t.Run("should make relative paths absolute", func(t *testing.T) {
@@ -296,6 +326,9 @@ func TestBuildahBuildArgs_MakePathsAbsolute(t *testing.T) {
 			Secrets: []cliwrappers.BuildahSecret{
 				{Src: "relative/secret", Id: "secret1"},
 			},
+			Volumes: []cliwrappers.BuildahVolume{
+				{HostDir: "relative/volume", ContainerDir: "/container/dir", Options: ""},
+			},
 		}
 
 		err := args.MakePathsAbsolute("/base/dir")
@@ -303,6 +336,7 @@ func TestBuildahBuildArgs_MakePathsAbsolute(t *testing.T) {
 		g.Expect(args.Containerfile).To(Equal("/base/dir/relative/Containerfile"))
 		g.Expect(args.ContextDir).To(Equal("/base/dir"))
 		g.Expect(args.Secrets[0].Src).To(Equal("/base/dir/relative/secret"))
+		g.Expect(args.Volumes[0].HostDir).To(Equal("/base/dir/relative/volume"))
 	})
 
 	t.Run("should handle a mix of relative and absolute paths", func(t *testing.T) {
@@ -313,6 +347,10 @@ func TestBuildahBuildArgs_MakePathsAbsolute(t *testing.T) {
 				{Src: "secret1/file", Id: "secret1"},
 				{Src: "/absolute/secret2/file", Id: "secret2"},
 			},
+			Volumes: []cliwrappers.BuildahVolume{
+				{HostDir: "volume1/dir", ContainerDir: "/container/dir1", Options: ""},
+				{HostDir: "/absolute/volume2/dir", ContainerDir: "/container/dir2", Options: "ro"},
+			},
 		}
 
 		err := args.MakePathsAbsolute("/base/dir")
@@ -321,6 +359,8 @@ func TestBuildahBuildArgs_MakePathsAbsolute(t *testing.T) {
 		g.Expect(args.ContextDir).To(Equal("/base/dir/context"))
 		g.Expect(args.Secrets[0].Src).To(Equal("/base/dir/secret1/file"))
 		g.Expect(args.Secrets[1].Src).To(Equal("/absolute/secret2/file"))
+		g.Expect(args.Volumes[0].HostDir).To(Equal("/base/dir/volume1/dir"))
+		g.Expect(args.Volumes[1].HostDir).To(Equal("/absolute/volume2/dir"))
 	})
 
 	t.Run("should use current working directory when baseDir is relative", func(t *testing.T) {
@@ -392,5 +432,31 @@ func TestBuildahBuildArgs_Validate(t *testing.T) {
 		err := args.Validate()
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(Equal("output-ref is empty"))
+	})
+
+	t.Run("should error when volume HostDir contains ':'", func(t *testing.T) {
+		args := &cliwrappers.BuildahBuildArgs{
+			Containerfile: containerfile,
+			ContextDir:    contextDir,
+			OutputRef:     outputRef,
+			Volumes:       []cliwrappers.BuildahVolume{{HostDir: "some:dir", ContainerDir: "/foo"}},
+		}
+
+		err := args.Validate()
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(Equal("':' in volume mount source path: some:dir"))
+	})
+
+	t.Run("should error when volume ContainerDir contains ':'", func(t *testing.T) {
+		args := &cliwrappers.BuildahBuildArgs{
+			Containerfile: containerfile,
+			ContextDir:    contextDir,
+			OutputRef:     outputRef,
+			Volumes:       []cliwrappers.BuildahVolume{{HostDir: "/foo", ContainerDir: "other:dir"}},
+		}
+
+		err := args.Validate()
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(Equal("':' in volume mount target path: other:dir"))
 	})
 }
