@@ -84,6 +84,15 @@ It's used to setup and run the test container the same way for all [test cases](
 It takes command arguments data and should return the command results, if any.
 Actually it represents the CLI sub command run in CI.
 
+### Logger output and coloring
+
+When running integration tests, logs may show raw ANSI escape codes (e.g., `\x1b[36m`) and escaped
+quotes, making the output hard to read. The logger respects the standard
+[CLICOLOR](https://bixense.com/clicolors/) environment variables:
+
+- **`CLICOLOR=0`** — disable colored output.
+- **`CLICOLOR_FORCE=1`** — force colored output.
+
 ### Common run function for a command
 
 Below is a typical example of common run function for a command:
