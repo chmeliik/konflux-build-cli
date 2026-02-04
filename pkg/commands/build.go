@@ -69,6 +69,13 @@ var BuildParamsConfig = map[string]common.Parameter{
 		TypeKind:   reflect.Slice,
 		Usage:      "Arguments to pass to the build using buildah's --build-arg option.",
 	},
+	"build-args-file": {
+		Name:       "build-args-file",
+		ShortName:  "",
+		EnvVarName: "KBC_BUILD_BUILD_ARGS_FILE",
+		TypeKind:   reflect.String,
+		Usage:      "Path to a file with build arguments, see https://www.mankier.com/1/buildah-build#--build-arg-file",
+	},
 }
 
 type BuildParams struct {
@@ -79,6 +86,7 @@ type BuildParams struct {
 	SecretDirs    []string `paramName:"secret-dirs"`
 	WorkdirMount  string   `paramName:"workdir-mount"`
 	BuildArgs     []string `paramName:"build-args"`
+	BuildArgsFile string   `paramName:"build-args-file"`
 	ExtraArgs     []string // Additional arguments to pass to buildah build
 }
 
@@ -187,6 +195,9 @@ func (c *Build) logParams() {
 	}
 	if len(c.Params.BuildArgs) > 0 {
 		l.Logger.Infof("[param] BuildArgs: %v", c.Params.BuildArgs)
+	}
+	if c.Params.BuildArgsFile != "" {
+		l.Logger.Infof("[param] BuildArgsFile: %s", c.Params.BuildArgsFile)
 	}
 	if len(c.Params.ExtraArgs) > 0 {
 		l.Logger.Infof("[param] ExtraArgs: %v", c.Params.ExtraArgs)
@@ -389,6 +400,7 @@ func (c *Build) buildImage() error {
 		OutputRef:     c.Params.OutputRef,
 		Secrets:       c.buildahSecrets,
 		BuildArgs:     c.Params.BuildArgs,
+		BuildArgsFile: c.Params.BuildArgsFile,
 		ExtraArgs:     c.Params.ExtraArgs,
 	}
 	if c.Params.WorkdirMount != "" {
