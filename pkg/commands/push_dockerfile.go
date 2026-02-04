@@ -134,7 +134,6 @@ func NewPushDockerfile(cmd *cobra.Command) (*PushDockerfile, error) {
 }
 
 func (c *PushDockerfile) Run() error {
-	l.Logger.Infoln("Push Dockerfile")
 	c.logParams()
 
 	imageUrl := c.Params.ImageUrl
@@ -148,26 +147,26 @@ func (c *PushDockerfile) Run() error {
 	if err != nil {
 		return fmt.Errorf("Error getting current directory: %w", err)
 	}
-	l.Logger.Infof("Using current directory: %s\n", curDir)
+	l.Logger.Debugf("Using current directory: %s\n", curDir)
 
-	l.Logger.Infof("Search Dockerfile '%s' from source '%s', context '%s'",
-		c.Params.Dockerfile, c.Params.Source, c.Params.Context)
 	dockerfilePath, err := common.SearchDockerfile(common.DockerfileSearchOpts{
 		SourceDir:  c.Params.Source,
 		ContextDir: c.Params.Context,
 		Dockerfile: c.Params.Dockerfile,
 	})
 	if err != nil {
-		return fmt.Errorf("Cannot find Dockerfile: %w", err)
+		return fmt.Errorf("Error on searching Dockerfile: %w", err)
 	}
-	l.Logger.Infof("Got Dockerfile: %s", dockerfilePath)
 
 	if dockerfilePath == "" {
-		l.Logger.Info("Dockerfile is not found. Abort push.")
+		l.Logger.Debugf("Dockerfile '%s' is not found from source '%s' and context '%s'. Abort push.",
+			c.Params.Dockerfile, c.Params.Source, c.Params.Context)
 		return nil
 	}
 
-	l.Logger.Infof("Select registry authentication for %s\n", imageUrl)
+	l.Logger.Debugf("Got Dockerfile: %s", dockerfilePath)
+
+	l.Logger.Debugf("Select registry authentication for %s\n", imageUrl)
 	registryAuth, err := common.SelectRegistryAuthFromDefaultAuthFile(imageUrl)
 	if err != nil {
 		return fmt.Errorf("Cannot select registry authentication for image %s: %w", imageUrl, err)
@@ -180,8 +179,6 @@ func (c *PushDockerfile) Run() error {
 
 	tag := c.dockerfileImageTag()
 
-	l.Logger.Infof("Pushing Dockerfile to registry. File: %s, tag: %s\n", dockerfilePath, tag)
-
 	absDockerfilePath, err := filepath.Abs(dockerfilePath)
 	if err != nil {
 		return fmt.Errorf("Error on getting absolute path of %s: %w", dockerfilePath, err)
@@ -189,8 +186,10 @@ func (c *PushDockerfile) Run() error {
 	remoteRepo := common.NewRepository(c.imageName, username, password)
 	digest, err := c.OrasClient.Push(remoteRepo, tag, absDockerfilePath, c.Params.ArtifactType)
 	if err != nil {
-		return fmt.Errorf("Failed to push Dockerfile: %w", err)
+		return fmt.Errorf("Failed to push Dockerfile %s: %w", dockerfilePath, err)
 	}
+
+	l.Logger.Debugf("Dockerfile '%s' is pushed to registry with tag: %s\n", dockerfilePath, tag)
 
 	artifactImageRef := fmt.Sprintf("%s@%s", c.imageName, digest)
 
@@ -198,7 +197,7 @@ func (c *PushDockerfile) Run() error {
 	if resultsJson, err := c.ResultsWriter.CreateResultJson(c.Results); err != nil {
 		return fmt.Errorf("Error on creating results JSON: %w", err)
 	} else {
-		l.Logger.Infof("%s\n", resultsJson)
+		fmt.Print(resultsJson)
 	}
 
 	if c.Params.ImageRefResultFile != "" {
