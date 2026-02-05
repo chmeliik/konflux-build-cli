@@ -301,43 +301,23 @@ func (c *TestRunnerContainer) GetFileContent(path string) (string, error) {
 }
 
 func (c *TestRunnerContainer) ExecuteBuildCli(args ...string) error {
-	return c.ExecuteBuildCliInDir("", args...)
-}
-
-func (c *TestRunnerContainer) ExecuteBuildCliInDir(workDir string, args ...string) error {
-	_, _, err := c.ExecuteBuildCliInDirWithOutput(workDir, args...)
-	return err
-}
-
-func (c *TestRunnerContainer) ExecuteBuildCliInDirWithOutput(workDir string, args ...string) (string, string, error) {
 	if Debug {
-		return "", "", c.debugBuildCliInDir(workDir, args...)
+		return c.debugBuildCli(args...)
 	}
-	return c.ExecuteCommandInDirWithOutput(workDir, KonfluxBuildCli, args...)
+	return c.ExecuteCommand(KonfluxBuildCli, args...)
 }
 
 func (c *TestRunnerContainer) ExecuteCommand(command string, args ...string) error {
-	return c.ExecuteCommandInDir("", command, args...)
-}
-
-func (c *TestRunnerContainer) ExecuteCommandInDir(workDir, command string, args ...string) error {
-	_, _, err := c.ExecuteCommandInDirWithOutput(workDir, command, args...)
+	_, _, err := c.ExecuteCommandWithOutput(command, args...)
 	return err
 }
 
 // ExecuteCommandWithOutput executes a command in the container and returns
 // stdout, stderr, and error.
 func (c *TestRunnerContainer) ExecuteCommandWithOutput(command string, args ...string) (string, string, error) {
-	return c.ExecuteCommandInDirWithOutput("", command, args...)
-}
-
-func (c *TestRunnerContainer) ExecuteCommandInDirWithOutput(workDir, command string, args ...string) (string, string, error) {
 	c.ensureContainerRunning()
-	execArgs := []string{"exec", "-t"}
-	if workDir != "" {
-		execArgs = append(execArgs, "--workdir", workDir)
-	}
-	execArgs = append(execArgs, c.name, command)
+	execArgs := []string{"exec", "-t", c.name}
+	execArgs = append(execArgs, command)
 	execArgs = append(execArgs, args...)
 
 	stdout, stderr, _, err := c.executor.ExecuteWithOutput(containerTool, execArgs...)
@@ -349,10 +329,6 @@ func (c *TestRunnerContainer) ExecuteCommandInDirWithOutput(workDir, command str
 }
 
 func (c *TestRunnerContainer) debugBuildCli(cliArgs ...string) error {
-	return c.debugBuildCliInDir("", cliArgs...)
-}
-
-func (c *TestRunnerContainer) debugBuildCliInDir(workDir string, cliArgs ...string) error {
 	c.ensureContainerRunning()
 
 	dlvPath, err := getDlvPath()
@@ -364,11 +340,8 @@ func (c *TestRunnerContainer) debugBuildCliInDir(workDir string, cliArgs ...stri
 		return err
 	}
 
-	execArgs := []string{"exec", "-t"}
-	if workDir != "" {
-		execArgs = append(execArgs, "--workdir", workDir)
-	}
-	execArgs = append(execArgs, c.name, "dlv", "--listen=0.0.0.0:2345", "--headless=true", "--log=true", "--api-version=2", "exec", "/usr/bin/"+KonfluxBuildCli)
+	execArgs := []string{"exec", "-t", c.name}
+	execArgs = append(execArgs, "dlv", "--listen=0.0.0.0:2345", "--headless=true", "--log=true", "--api-version=2", "exec", "/usr/bin/"+KonfluxBuildCli)
 	if len(cliArgs) > 0 {
 		execArgs = append(execArgs, "--")
 		execArgs = append(execArgs, cliArgs...)

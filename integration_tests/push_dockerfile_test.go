@@ -15,7 +15,7 @@ import (
 	. "github.com/konflux-ci/konflux-build-cli/integration_tests/framework"
 )
 
-const TaskRunnerImage = "quay.io/konflux-ci/task-runner:1.1.1"
+const TaskRunnerImage = "quay.io/konflux-ci/task-runner:1.3.0"
 
 func sha256Checksum(input string) string {
 	hash := sha256.New()
@@ -62,14 +62,12 @@ func TestPushDockerfile(t *testing.T) {
 	commonOpts := []ContainerOption{}
 	imageRegistry := setupImageRegistry(t)
 	container := setupPushDockerfileContainerWithCleanup(t, imageRegistry, commonOpts...)
-	homeDir, err := container.GetHomeDir()
-	g.Expect(err).ShouldNot(HaveOccurred())
 
 	dirs := []string{
 		"source/containerfiles",
 	}
 	for _, dirname := range dirs {
-		err = container.ExecuteCommandInDir(homeDir, "mkdir", "-p", dirname)
+		err := container.ExecuteCommand("mkdir", "-p", dirname)
 		g.Expect(err).ShouldNot(HaveOccurred())
 	}
 
@@ -81,7 +79,7 @@ func TestPushDockerfile(t *testing.T) {
 		fileContent := files[i]
 		fileName := files[i+1]
 		script := fmt.Sprintf(`echo "%s" >%s`, fileContent, fileName)
-		err = container.ExecuteCommandInDir(homeDir, "bash", "-c", script)
+		err := container.ExecuteCommand("bash", "-c", script)
 		g.Expect(err).ShouldNot(HaveOccurred())
 	}
 
@@ -180,7 +178,7 @@ func TestPushDockerfile(t *testing.T) {
 				cmd = append(cmd, "--context", tc.params.context)
 			}
 
-			err = container.ExecuteBuildCliInDir(homeDir, cmd...)
+			err := container.ExecuteBuildCli(cmd...)
 			g.Expect(err).ShouldNot(HaveOccurred())
 
 			tagSuffix := tc.params.tagSuffix
