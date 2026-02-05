@@ -89,7 +89,7 @@ func TestDockerfileImageTag(t *testing.T) {
 		imageName: "localhost:5000/cool/app",
 	}
 	expected := "sha256-e7afdb605d0685d214876ae9d13ae0cc15da3a766be86e919fecee4032b9783b.containerfile"
-	imageTag := cmd.dockerfileImageTag()
+	imageTag := cmd.generateDockerfileImageTag()
 	if imageTag != expected {
 		t.Errorf("Expect tag %s, but got: %s", expected, imageTag)
 	}

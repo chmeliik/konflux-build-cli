@@ -177,7 +177,7 @@ func (c *PushDockerfile) Run() error {
 		return fmt.Errorf("Error on extracting authentication credential: %w", err)
 	}
 
-	tag := c.dockerfileImageTag()
+	tag := c.generateDockerfileImageTag()
 
 	absDockerfilePath, err := filepath.Abs(dockerfilePath)
 	if err != nil {
@@ -210,7 +210,7 @@ func (c *PushDockerfile) Run() error {
 	return nil
 }
 
-func (c *PushDockerfile) dockerfileImageTag() string {
+func (c *PushDockerfile) generateDockerfileImageTag() string {
 	digest := strings.Replace(c.Params.ImageDigest, ":", "-", 1)
 	return digest + c.Params.TagSuffix
 }
