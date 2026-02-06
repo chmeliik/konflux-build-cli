@@ -8,9 +8,11 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+	"github.com/sirupsen/logrus"
 	"oras.land/oras-go/v2/registry/remote"
 
 	"github.com/konflux-ci/konflux-build-cli/pkg/common"
+	l "github.com/konflux-ci/konflux-build-cli/pkg/logger"
 )
 
 const imageDigest = "sha256:e7afdb605d0685d214876ae9d13ae0cc15da3a766be86e919fecee4032b9783b"
@@ -161,6 +163,20 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("Do not push if specified Containerfile is not found", func(t *testing.T) {
+		logFilename := filepath.Join(t.TempDir(), "logfile")
+		logFile, _ := os.OpenFile(logFilename, os.O_CREATE|os.O_WRONLY, 0644)
+
+		originLogOutput := l.Logger.Out
+		originLoglevel := l.Logger.Level
+
+		defer func() {
+			l.Logger.SetOutput(originLogOutput)
+			l.Logger.SetLevel(originLoglevel)
+		}()
+
+		l.Logger.SetLevel(logrus.DebugLevel)
+		l.Logger.SetOutput(logFile)
+
 		cmd := &PushContainerfile{
 			Params: &PushContainerfileParams{
 				ImageUrl:      "localhost.reg.io/app",
@@ -173,8 +189,12 @@ func TestRun(t *testing.T) {
 		}
 
 		err := cmd.Run()
-		// How to capture the log message?
 		g.Expect(err).ShouldNot(HaveOccurred())
+
+		logFile.Close()
+		logContent, _ := os.ReadFile(logFilename)
+		expectedMsg := "Containerfile 'Dockerfile' is not found from source 'source' and context ''. Abort push."
+		g.Expect(string(logContent)).Should(ContainSubstring(expectedMsg))
 	})
 
 	t.Run("Registry authentication cannot be selected", func(t *testing.T) {
