@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/sirupsen/logrus"
 	"oras.land/oras-go/v2/registry/remote"
+	"oras.land/oras-go/v2/registry/remote/auth"
 
 	"github.com/konflux-ci/konflux-build-cli/pkg/common"
 	l "github.com/konflux-ci/konflux-build-cli/pkg/logger"
@@ -136,30 +138,54 @@ func TestRun(t *testing.T) {
 
 		orasClient := &mockOrasClient{}
 		orasClient.pushFunc = func(remoteRepo *remote.Repository, tag, localFilePath, artifactType string) (string, error) {
+			client := remoteRepo.Client.(*auth.Client)
+			cred, _ := client.Credential(context.Background(), "localhost.reg.io")
+			g.Expect(cred.Username).Should(Equal("usernamed"))
+			g.Expect(cred.Password).Should(Equal("passw0rd"))
+
+			expectedTag := "sha256-e7afdb605d0685d214876ae9d13ae0cc15da3a766be86e919fecee4032b9783b.containerfile"
+			g.Expect(tag).Should(Equal(expectedTag))
+			expectedFilePath := filepath.Join(workDir, "source", "Containerfile")
+			g.Expect(localFilePath).Should(Equal(expectedFilePath))
+			g.Expect(artifactType).Should(Equal("application/vnd.konflux.containerfile"))
+
 			return artifactImageDigest, nil
 		}
 
-		cmd := &PushContainerfile{
-			Params: &PushContainerfileParams{
-				ImageUrl:           "localhost.reg.io/app",
-				ImageDigest:        imageDigest,
-				Source:             "source",
-				Containerfile:      "Containerfile",
-				Context:            ".",
-				TagSuffix:          ".containerfile",
-				ArtifactType:       "application/vnd.konflux.containerfile",
-				ResultPathImageRef: filepath.Join(workDir, "results", "image-ref"),
-			},
-			ResultsWriter: &common.ResultsWriter{},
-			OrasClient:    orasClient,
+		sourcePathCases := []struct {
+			name string
+			path string
+		}{
+			{name: "use relative path", path: "source"},
+			{name: "use absolute path", path: filepath.Join(workDir, "source")},
 		}
 
-		err := cmd.Run()
-		g.Expect(err).ShouldNot(HaveOccurred())
+		for _, tc := range sourcePathCases {
+			t.Run(tc.name, func(t *testing.T) {
+				cmd := &PushContainerfile{
+					Params: &PushContainerfileParams{
+						ImageUrl:           "localhost.reg.io/app",
+						ImageDigest:        imageDigest,
+						Source:             tc.path,
+						Containerfile:      "Containerfile",
+						Context:            ".",
+						TagSuffix:          ".containerfile",
+						ArtifactType:       "application/vnd.konflux.containerfile",
+						ResultPathImageRef: filepath.Join(workDir, "results", "image-ref"),
+					},
+					ResultsWriter: &common.ResultsWriter{},
+					OrasClient:    orasClient,
+				}
 
-		expectedImageRef := "localhost.reg.io/app@" + artifactImageDigest
-		actualImageRef, _ := os.ReadFile(cmd.Params.ResultPathImageRef)
-		g.Expect(string(actualImageRef)).Should(Equal(expectedImageRef))
+				err := cmd.Run()
+				g.Expect(err).ShouldNot(HaveOccurred())
+
+				expectedImageRef := "localhost.reg.io/app@" + artifactImageDigest
+				actualImageRef, _ := os.ReadFile(cmd.Params.ResultPathImageRef)
+				g.Expect(string(actualImageRef)).Should(Equal(expectedImageRef))
+			})
+		}
+
 	})
 
 	t.Run("Do not push if specified Containerfile is not found", func(t *testing.T) {
