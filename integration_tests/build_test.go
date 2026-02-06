@@ -1,6 +1,7 @@
 package integration_tests
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -24,15 +25,16 @@ const (
 )
 
 type BuildParams struct {
-	Context       string
-	Containerfile string
-	OutputRef     string
-	Push          bool
-	SecretDirs    []string
-	WorkdirMount  string
-	BuildArgs     []string
-	BuildArgsFile string
-	ExtraArgs     []string
+	Context                 string
+	Containerfile           string
+	OutputRef               string
+	Push                    bool
+	SecretDirs              []string
+	WorkdirMount            string
+	BuildArgs               []string
+	BuildArgsFile           string
+	ContainerfileJsonOutput string
+	ExtraArgs               []string
 }
 
 // Public interface for parity with ApplyTags. Not used in these tests directly.
@@ -155,6 +157,9 @@ func runBuildWithOutput(container *TestRunnerContainer, buildParams BuildParams)
 	}
 	if buildParams.BuildArgsFile != "" {
 		args = append(args, "--build-args-file", buildParams.BuildArgsFile)
+	}
+	if buildParams.ContainerfileJsonOutput != "" {
+		args = append(args, "--dockerfile-json-output", buildParams.ContainerfileJsonOutput)
 	}
 	// Add separator and extra args if provided
 	if len(buildParams.ExtraArgs) > 0 {
@@ -443,7 +448,7 @@ RUN --mount=type=bind,from=builder,src=.,target=/var/tmp \
 		Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("Image %s should exist in local buildah storage", outputRef))
 	})
 
-	t.Run("WithBuildArgs", func(t *testing.T) {
+	t.Run("ContainerfileParsingAndBuildArgs", func(t *testing.T) {
 		contextDir := setupTestContext(t)
 
 		writeContainerfile(contextDir, `
@@ -467,13 +472,15 @@ LABEL test.label="build-args-test"
 		})
 
 		outputRef := "localhost/test-image-build-args:" + GenerateUniqueTag(t)
+		containerfileJsonPath := "/workspace/dockerfile.json"
 
 		buildParams := BuildParams{
-			Context:       contextDir,
-			OutputRef:     outputRef,
-			Push:          false,
-			BuildArgs:     []string{"NAME=foo", "VERSION=1.2.3"},
-			BuildArgsFile: "/workspace/build-args-file",
+			Context:                 contextDir,
+			OutputRef:               outputRef,
+			Push:                    false,
+			BuildArgs:               []string{"NAME=foo", "VERSION=1.2.3"},
+			BuildArgsFile:           "/workspace/build-args-file",
+			ContainerfileJsonOutput: containerfileJsonPath,
 		}
 
 		container := setupBuildContainerWithCleanup(t, buildParams, nil)
@@ -481,6 +488,7 @@ LABEL test.label="build-args-test"
 		err := runBuild(container, buildParams)
 		Expect(err).ToNot(HaveOccurred())
 
+		// Verify image labels
 		stdout, _, err := container.ExecuteCommandWithOutput(
 			"buildah", "inspect", "--format", `{{ range $k, $v := .OCIv1.Config.Labels }}{{ printf "%s=%s\n" $k $v }}{{ end }}`, outputRef,
 		)
@@ -493,5 +501,46 @@ LABEL test.label="build-args-test"
 			"author=John Doe",
 			"vendor=konflux-ci.dev",
 		))
+
+		// Verify the parsed Dockerfile has the same values
+		containerfileJSON, err := container.GetFileContent(containerfileJsonPath)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Parse into a generic structure since JSON unmarshaling doesn't preserve interface types
+		var containerfile struct {
+			Stages []struct {
+				Commands []struct {
+					Name   string
+					Labels []struct {
+						Key     string
+						Value   string
+						NoDelim bool
+					}
+				}
+			}
+		}
+		err = json.Unmarshal([]byte(containerfileJSON), &containerfile)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Verify the structure
+		Expect(containerfile.Stages).To(HaveLen(1))
+		stage := containerfile.Stages[0]
+
+		// Find LABEL commands and verify expanded values
+		parsedLabels := make(map[string]string)
+		for _, cmd := range stage.Commands {
+			if strings.ToLower(cmd.Name) == "label" {
+				for _, label := range cmd.Labels {
+					parsedLabels[label.Key] = label.Value
+				}
+			}
+		}
+		Expect(parsedLabels).ToNot(BeEmpty())
+
+		// Verify parsed labels match actual image labels
+		Expect(parsedLabels["name"]).To(Equal("foo"))
+		Expect(parsedLabels["version"]).To(Equal("1.2.3"))
+		Expect(parsedLabels["author"]).To(Equal("John Doe"))
+		Expect(parsedLabels["vendor"]).To(Equal("konflux-ci.dev"))
 	})
 }
