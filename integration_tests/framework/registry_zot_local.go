@@ -109,7 +109,7 @@ func NewZotRegistry() ImageRegistry {
 }
 
 func (z *ZotRegistry) GetRegistryDomain() string {
-	return "localhost:" + z.zotRegistryPort
+	return "127.0.0.1:" + z.zotRegistryPort
 }
 
 func (z *ZotRegistry) GetTestNamespace() string {
