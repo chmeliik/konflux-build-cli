@@ -1,0 +1,18 @@
+[github_app]
+# By default, Qodo generates both a PR description and a PR review.
+# Keep only the review to reduce noice. Description can be generated on demand
+# by commenting /agentic_describe.
+pr_commands = [
+    "/agentic_review",
+]
+
+[review_agent]
+# By default, Qodo posts a summary comment with all review comments and also
+# posts the comments inline.
+comments_location_policy = "inline"
+# Since we're only posting the comments inline, reduce the threshold from action_required
+# to remediation_recommended. Available values:
+#   3=action_required
+#   2=remediation_recommended
+#   1=informational
+inline_comments_severity_threshold = 2
