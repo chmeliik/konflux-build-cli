@@ -1,0 +1,16 @@
+# https://docs.qodo.ai/qodo-documentation/code-review/concepts/configuration/configuration-file
+
+[github_app]
+pr_commands = [
+    "/agentic_describe",
+    "/agentic_review",
+]
+
+[review_agent]
+# Post both a summary review comment and inline review comments
+comments_location_policy = "both"
+# Post only the most critical comments inline. Available values:
+#   3=action_required
+#   2=remediation_recommended
+#   1=informational
+inline_comments_severity_threshold = 3
