@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/konflux-ci/konflux-build-cli/pkg/common"
 	"github.com/spf13/cobra"
 
+	"github.com/keilerkonzept/dockerfile-json/pkg/dockerfile"
 	l "github.com/konflux-ci/konflux-build-cli/pkg/logger"
 )
 
@@ -76,18 +78,26 @@ var BuildParamsConfig = map[string]common.Parameter{
 		TypeKind:   reflect.String,
 		Usage:      "Path to a file with build arguments, see https://www.mankier.com/1/buildah-build#--build-arg-file",
 	},
+	"dockerfile-json-output": {
+		Name:       "dockerfile-json-output",
+		ShortName:  "",
+		EnvVarName: "KBC_BUILD_DOCKERFILE_JSON_OUTPUT",
+		TypeKind:   reflect.String,
+		Usage:      "Path to write the parsed Dockerfile JSON representation.",
+	},
 }
 
 type BuildParams struct {
-	Containerfile string   `paramName:"containerfile"`
-	Context       string   `paramName:"context"`
-	OutputRef     string   `paramName:"output-ref"`
-	Push          bool     `paramName:"push"`
-	SecretDirs    []string `paramName:"secret-dirs"`
-	WorkdirMount  string   `paramName:"workdir-mount"`
-	BuildArgs     []string `paramName:"build-args"`
-	BuildArgsFile string   `paramName:"build-args-file"`
-	ExtraArgs     []string // Additional arguments to pass to buildah build
+	Containerfile         string   `paramName:"containerfile"`
+	Context               string   `paramName:"context"`
+	OutputRef             string   `paramName:"output-ref"`
+	Push                  bool     `paramName:"push"`
+	SecretDirs            []string `paramName:"secret-dirs"`
+	WorkdirMount          string   `paramName:"workdir-mount"`
+	BuildArgs             []string `paramName:"build-args"`
+	BuildArgsFile         string   `paramName:"build-args-file"`
+	DockerfileJsonOutput  string   `paramName:"dockerfile-json-output"`
+	ExtraArgs             []string // Additional arguments to pass to buildah build
 }
 
 type BuildCliWrappers struct {
@@ -156,6 +166,12 @@ func (c *Build) Run() error {
 		return err
 	}
 
+	if c.Params.DockerfileJsonOutput != "" {
+		if err := c.parseAndWriteDockerfile(); err != nil {
+			return err
+		}
+	}
+
 	if err := c.buildImage(); err != nil {
 		return err
 	}
@@ -198,6 +214,9 @@ func (c *Build) logParams() {
 	}
 	if c.Params.BuildArgsFile != "" {
 		l.Logger.Infof("[param] BuildArgsFile: %s", c.Params.BuildArgsFile)
+	}
+	if c.Params.DockerfileJsonOutput != "" {
+		l.Logger.Infof("[param] DockerfileJsonOutput: %s", c.Params.DockerfileJsonOutput)
 	}
 	if len(c.Params.ExtraArgs) > 0 {
 		l.Logger.Infof("[param] ExtraArgs: %v", c.Params.ExtraArgs)
@@ -382,6 +401,94 @@ func isRegular(entry os.DirEntry, dir string) (bool, error) {
 	return false, nil
 }
 
+func readBuildArgsFile(buildArgFilePath string) (map[string]string, error) {
+	buildArgFile, err := os.ReadFile(buildArgFilePath)
+	if err != nil {
+		return nil, err
+	}
+
+	args := make(map[string]string)
+
+	for i, line := range strings.Split(string(buildArgFile), "\n") {
+		line = strings.TrimSpace(line)
+
+		// Skip empty lines and comments
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// Parse KEY=VALUE format
+		idx := strings.IndexByte(line, '=')
+		if idx <= 0 {
+			return nil, fmt.Errorf("%s:%d: expected arg=value, got %q", buildArgFilePath, i+1, line)
+		}
+
+		key := strings.TrimSpace(line[:idx])
+		value := strings.TrimSpace(line[idx+1:])
+
+		if key == "" {
+			return nil, fmt.Errorf("%s:%d: empty key in %q", buildArgFilePath, i+1, line)
+		}
+
+		args[key] = value
+	}
+
+	return args, nil
+}
+
+func (c *Build) createBuildArgExpander() (dockerfile.SingleWordExpander, error) {
+	args := make(map[string]string)
+
+	// Add built-in Docker platform ARGs
+	// These are typically set by the build system
+	args["BUILDPLATFORM"] = ""
+	args["BUILDOS"] = ""
+	args["BUILDARCH"] = ""
+	args["BUILDVARIANT"] = ""
+	args["TARGETPLATFORM"] = ""
+	args["TARGETOS"] = ""
+	args["TARGETARCH"] = ""
+	args["TARGETVARIANT"] = ""
+
+	// Load from --build-args-file
+	if c.Params.BuildArgsFile != "" {
+		fileArgs, err := readBuildArgsFile(c.Params.BuildArgsFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read build args file: %w", err)
+		}
+		for key, value := range fileArgs {
+			args[key] = value
+		}
+	}
+
+	// CLI --build-args take precedence
+	for _, arg := range c.Params.BuildArgs {
+		// Parse KEY=VALUE or just KEY (empty value)
+		key, value, found := strings.Cut(arg, "=")
+		if !found {
+			// Just KEY without =, set to empty string
+			args[key] = ""
+		} else {
+			args[key] = value
+		}
+	}
+
+	// Return expander function
+	return func(word string) (string, error) {
+		if value, ok := args[word]; ok {
+			return value, nil
+		}
+		return "", fmt.Errorf("not defined: $%s", word)
+	}, nil
+}
+
+func createEnvExpander() dockerfile.SingleWordExpander {
+	return func(word string) (string, error) {
+		// Never resolve environment variables for now
+		return "", fmt.Errorf("not defined: $%s", word)
+	}
+}
+
 func (c *Build) buildImage() error {
 	l.Logger.Info("Building container image...")
 
@@ -437,4 +544,40 @@ func (c *Build) pushImage() (string, error) {
 	l.Logger.Infof("Image digest: %s", digest)
 
 	return digest, nil
+}
+
+func (c *Build) parseAndWriteDockerfile() error {
+	l.Logger.Infof("Parsing Dockerfile: %s", c.containerfilePath)
+
+	// Parse the Dockerfile
+	df, err := dockerfile.Parse(c.containerfilePath)
+	if err != nil {
+		return fmt.Errorf("failed to parse Dockerfile: %w", err)
+	}
+
+	// Create build arg expander
+	argExp, err := c.createBuildArgExpander()
+	if err != nil {
+		return fmt.Errorf("failed to create build arg expander: %w", err)
+	}
+
+	// Create env expander (placeholder that never resolves)
+	envExp := createEnvExpander()
+
+	// Expand variables in the parsed Dockerfile
+	df.Expand(argExp, envExp)
+
+	// Marshal to JSON with indentation
+	jsonData, err := json.MarshalIndent(df, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal Dockerfile to JSON: %w", err)
+	}
+
+	// Write to file
+	if err := os.WriteFile(c.Params.DockerfileJsonOutput, jsonData, 0644); err != nil {
+		return fmt.Errorf("failed to write Dockerfile JSON to %s: %w", c.Params.DockerfileJsonOutput, err)
+	}
+
+	l.Logger.Infof("Wrote parsed Dockerfile to: %s", c.Params.DockerfileJsonOutput)
+	return nil
 }
