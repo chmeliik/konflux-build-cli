@@ -1,7 +1,6 @@
 package common
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -112,20 +111,4 @@ func readAuthFile(authFilePath string) (*RegistryAuths, error) {
 	}
 
 	return &registryAuths, nil
-}
-
-// ExtractCredentials extracts and returns username and password from argument authCred.
-// Argument authCred is expected to be a base64-encoded string containing username and password separated by colon.
-func ExtractCredentials(authCred string) (string, string, error) {
-	decoded, err := base64.StdEncoding.DecodeString(authCred)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to decode token: %w", err)
-	}
-
-	parts := strings.SplitN(string(decoded), ":", 2)
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("invalid credential format: expected 'username:password'")
-	}
-
-	return parts[0], parts[1], nil
 }

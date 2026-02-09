@@ -1,7 +1,6 @@
 package common
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"math/rand"
 	"os"
@@ -139,92 +138,5 @@ func TestFallbackSelectionForDockerIO(t *testing.T) {
 	if registryAuth.Token != indexDockerIOToken {
 		t.Errorf("Token is not selected from registry %s from auth file.", registryIndexDockerIO)
 		return
-	}
-}
-
-func TestExtractCredentials(t *testing.T) {
-	testCases := []struct {
-		name          string
-		token         string
-		expectedUser  string
-		expectedPass  string
-		expectedError bool
-	}{
-		{
-			name:          "valid basic auth",
-			token:         base64.StdEncoding.EncodeToString([]byte("user:pass")),
-			expectedUser:  "user",
-			expectedPass:  "pass",
-			expectedError: false,
-		},
-		{
-			name:          "valid auth with complex password",
-			token:         base64.StdEncoding.EncodeToString([]byte("admin:p@ssw0rd123!@#")),
-			expectedUser:  "admin",
-			expectedPass:  "p@ssw0rd123!@#",
-			expectedError: false,
-		},
-		{
-			name:          "valid auth with colon in password",
-			token:         base64.StdEncoding.EncodeToString([]byte("user:pass:word")),
-			expectedUser:  "user",
-			expectedPass:  "pass:word",
-			expectedError: false,
-		},
-		{
-			name:          "empty username",
-			token:         base64.StdEncoding.EncodeToString([]byte(":password")),
-			expectedUser:  "",
-			expectedPass:  "password",
-			expectedError: false,
-		},
-		{
-			name:          "empty password",
-			token:         base64.StdEncoding.EncodeToString([]byte("username:")),
-			expectedUser:  "username",
-			expectedPass:  "",
-			expectedError: false,
-		},
-		{
-			name:          "invalid base64",
-			token:         "invalid-base64!@#",
-			expectedError: true,
-		},
-		{
-			name:          "missing colon separator",
-			token:         base64.StdEncoding.EncodeToString([]byte("usernamepassword")),
-			expectedError: true,
-		},
-		{
-			name:          "empty token",
-			token:         "",
-			expectedError: true,
-		},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			username, password, err := ExtractCredentials(tc.token)
-
-			if tc.expectedError {
-				if err == nil {
-					t.Errorf("Expected error but got none")
-				}
-				return
-			}
-
-			if err != nil {
-				t.Errorf("Unexpected error: %v", err)
-				return
-			}
-
-			if username != tc.expectedUser {
-				t.Errorf("Expected username %q, got %q", tc.expectedUser, username)
-			}
-
-			if password != tc.expectedPass {
-				t.Errorf("Expected password %q, got %q", tc.expectedPass, password)
-			}
-		})
 	}
 }

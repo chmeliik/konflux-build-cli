@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/konflux-ci/konflux-build-cli/pkg/cliwrappers"
 	"github.com/konflux-ci/konflux-build-cli/pkg/common"
 	l "github.com/konflux-ci/konflux-build-cli/pkg/logger"
 )
@@ -109,9 +110,13 @@ type PushContainerfileResults struct {
 	ImageRef string `json:"image_ref"`
 }
 
+type OrasCliWrappers struct {
+	OrasCli cliwrappers.OrasCliInterface
+}
+
 type PushContainerfile struct {
 	Params        *PushContainerfileParams
-	OrasClient    common.OrasClientInterface
+	CliWrappers   OrasCliWrappers
 	Results       PushContainerfileResults
 	ResultsWriter common.ResultsWriterInterface
 
@@ -125,10 +130,22 @@ func NewPushContainerfile(cmd *cobra.Command) (*PushContainerfile, error) {
 	}
 	pushContainerfile := &PushContainerfile{
 		Params:        params,
-		OrasClient:    common.NewOrasClient(),
 		ResultsWriter: common.NewResultsWriter(),
 	}
+	if err := pushContainerfile.initCliWrappers(); err != nil {
+		return nil, err
+	}
 	return pushContainerfile, nil
+}
+
+func (c *PushContainerfile) initCliWrappers() error {
+	executor := cliwrappers.NewCliExecutor()
+	orasCli, err := cliwrappers.NewOrasCli(executor)
+	if err != nil {
+		return err
+	}
+	c.CliWrappers.OrasCli = orasCli
+	return nil
 }
 
 func (c *PushContainerfile) Run() error {
@@ -170,10 +187,18 @@ func (c *PushContainerfile) Run() error {
 		return fmt.Errorf("Cannot select registry authentication for image %s: %w", imageUrl, err)
 	}
 
-	username, password, err := common.ExtractCredentials(registryAuth.Token)
+	registryConfigFile, err := os.CreateTemp("", "oras-push-registry-config-*")
 	if err != nil {
-		return fmt.Errorf("Error on extracting authentication credential: %w", err)
+		return fmt.Errorf("Error on creating temporary file for registry config: %w", err)
 	}
+	_, err = registryConfigFile.WriteString(fmt.Sprintf(`{"auths":{"%s":{"auth":"%s"}}}`, registryAuth.Registry, registryAuth.Token))
+	if err != nil {
+		return fmt.Errorf("Error on writing registry config file: %w", err)
+	}
+	if err = registryConfigFile.Close(); err != nil {
+		return fmt.Errorf("Error on closing registry config file after write: %w", err)
+	}
+	defer os.Remove(registryConfigFile.Name())
 
 	tag := c.generateContainerfileImageTag()
 
@@ -181,15 +206,25 @@ func (c *PushContainerfile) Run() error {
 	if err != nil {
 		return fmt.Errorf("Error on getting absolute path of %s: %w", containerfilePath, err)
 	}
-	remoteRepo := common.NewRepository(c.imageName, username, password)
-	digest, err := c.OrasClient.Push(remoteRepo, tag, absContainerfilePath, c.Params.ArtifactType)
+
+	os.Chdir(filepath.Dir(absContainerfilePath))
+	defer os.Chdir(curDir)
+
+	stdout, _, err := c.CliWrappers.OrasCli.Push(&cliwrappers.OrasPushArgs{
+		ArtifactType:     c.Params.ArtifactType,
+		RegistryConfig:   registryConfigFile.Name(),
+		Format:           "go-template",
+		Template:         "{{.reference}}",
+		DestinationImage: fmt.Sprintf("%s:%s", c.imageName, tag),
+		FileName:         filepath.Base(absContainerfilePath),
+	})
 	if err != nil {
-		return fmt.Errorf("Failed to push Containerfile %s: %w", containerfilePath, err)
+		return fmt.Errorf("Error on pushing Containerfile %s: %w", containerfilePath, err)
 	}
 
 	l.Logger.Infof("Containerfile '%s' is pushed to registry with tag: %s", containerfilePath, tag)
 
-	artifactImageRef := fmt.Sprintf("%s@%s", c.imageName, digest)
+	artifactImageRef := strings.TrimSpace(stdout)
 
 	c.Results.ImageRef = artifactImageRef
 	if resultsJson, err := c.ResultsWriter.CreateResultJson(c.Results); err != nil {

@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,9 +9,8 @@ import (
 
 	. "github.com/onsi/gomega"
 	"github.com/sirupsen/logrus"
-	"oras.land/oras-go/v2/registry/remote"
-	"oras.land/oras-go/v2/registry/remote/auth"
 
+	"github.com/konflux-ci/konflux-build-cli/pkg/cliwrappers"
 	"github.com/konflux-ci/konflux-build-cli/pkg/common"
 	l "github.com/konflux-ci/konflux-build-cli/pkg/logger"
 )
@@ -99,21 +97,12 @@ func TestGenerateContainerfileImageTag(t *testing.T) {
 	}
 }
 
-type mockOrasClient struct {
-	pushFunc func(remoteRepo *remote.Repository, tag, localFilePath, artifactType string) (string, error)
-}
-
-func (o *mockOrasClient) Push(remoteRepo *remote.Repository, tag, localFilePath, artifactType string) (string, error) {
-	return o.pushFunc(remoteRepo, tag, localFilePath, artifactType)
-}
-
 func TestRun(t *testing.T) {
 	g := NewWithT(t)
 	workDir := t.TempDir()
 
 	os.Mkdir(filepath.Join(workDir, "source"), 0755)
 	os.Mkdir(filepath.Join(workDir, "results"), 0755)
-
 	os.WriteFile(filepath.Join(workDir, "source", "Containerfile"), []byte("FROM fedora"), 0644)
 
 	originalHomeDir := os.Getenv("HOME")
@@ -127,8 +116,7 @@ func TestRun(t *testing.T) {
 
 	// Mock docker config for selecting registry authentication.
 	os.Mkdir(filepath.Join(workDir, ".docker"), 0755)
-	// Base64-encoded from usernamed:passw0rd
-	authConfig := `{"auths":{"localhost.reg.io":{"auth":"dXNlcm5hbWVkOnBhc3N3MHJk"}}}`
+	const authConfig = `{"auths":{"localhost.reg.io":{"auth":"token"}}}`
 	os.WriteFile(filepath.Join(workDir, ".docker", "config.json"), []byte(authConfig), 0644)
 
 	os.Chdir(workDir)
@@ -136,28 +124,27 @@ func TestRun(t *testing.T) {
 	t.Run("Successful push", func(t *testing.T) {
 		artifactImageDigest := "sha256:a7c0071906a9c6b654760e44a1fc8226f8268c70848148f19c35b02788b272a5"
 
-		orasClient := &mockOrasClient{}
-		orasClient.pushFunc = func(remoteRepo *remote.Repository, tag, localFilePath, artifactType string) (string, error) {
-			client := remoteRepo.Client.(*auth.Client)
-			cred, _ := client.Credential(context.Background(), "localhost.reg.io")
-			g.Expect(cred.Username).Should(Equal("usernamed"))
-			g.Expect(cred.Password).Should(Equal("passw0rd"))
-
-			expectedTag := "sha256-e7afdb605d0685d214876ae9d13ae0cc15da3a766be86e919fecee4032b9783b.containerfile"
-			g.Expect(tag).Should(Equal(expectedTag))
-			expectedFilePath := filepath.Join(workDir, "source", "Containerfile")
-			g.Expect(localFilePath).Should(Equal(expectedFilePath))
-			g.Expect(artifactType).Should(Equal("application/vnd.konflux.containerfile"))
-
-			return artifactImageDigest, nil
-		}
-
 		sourcePathCases := []struct {
 			name string
 			path string
 		}{
 			{name: "use relative path", path: "source"},
 			{name: "use absolute path", path: filepath.Join(workDir, "source")},
+		}
+
+		orasCli := &mockOrasCli{}
+		orasCli.PushFunc = func(args *cliwrappers.OrasPushArgs) (string, string, error) {
+			expectedImage := "localhost.reg.io/app:sha256-e7afdb605d0685d214876ae9d13ae0cc15da3a766be86e919fecee4032b9783b.containerfile"
+			g.Expect(args.DestinationImage).Should(Equal(expectedImage))
+			g.Expect(args.FileName).Should(Equal("Containerfile"))
+			g.Expect(args.Template).Should(Equal("{{.reference}}"))
+			g.Expect(args.Format).Should(Equal("go-template"))
+			g.Expect(args.ArtifactType).Should(Equal("application/vnd.konflux.containerfile"))
+			g.Expect(args.RegistryConfig).ShouldNot(Equal(""))
+			authContent, err := os.ReadFile(args.RegistryConfig)
+			g.Expect(err).ShouldNot(HaveOccurred())
+			g.Expect(string(authContent)).Should(Equal(authConfig))
+			return "localhost.reg.io/app@" + artifactImageDigest, "", nil
 		}
 
 		for _, tc := range sourcePathCases {
@@ -174,7 +161,7 @@ func TestRun(t *testing.T) {
 						ResultPathImageRef: filepath.Join(workDir, "results", "image-ref"),
 					},
 					ResultsWriter: &common.ResultsWriter{},
-					OrasClient:    orasClient,
+					CliWrappers:   OrasCliWrappers{OrasCli: orasCli},
 				}
 
 				err := cmd.Run()
@@ -242,9 +229,9 @@ func TestRun(t *testing.T) {
 	})
 
 	t.Run("Oras push fails", func(t *testing.T) {
-		orasClient := &mockOrasClient{}
-		orasClient.pushFunc = func(remoteRepo *remote.Repository, tag, localFilePath, artifactType string) (string, error) {
-			return "", fmt.Errorf("Mock oras push failed.")
+		orasCli := &mockOrasCli{}
+		orasCli.PushFunc = func(args *cliwrappers.OrasPushArgs) (string, string, error) {
+			return "", "", fmt.Errorf("Mock oras push failed")
 		}
 
 		cmd := &PushContainerfile{
@@ -257,7 +244,7 @@ func TestRun(t *testing.T) {
 				TagSuffix:     ".containerfile",
 			},
 			ResultsWriter: &common.ResultsWriter{},
-			OrasClient:    orasClient,
+			CliWrappers:   OrasCliWrappers{OrasCli: orasCli},
 		}
 
 		err := cmd.Run()
