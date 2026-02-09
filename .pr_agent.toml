@@ -1,0 +1,8 @@
+[github_app]
+pr_commands = [
+    "/agentic_review",
+]
+
+[review_agent]
+# Post only a summary review comment, don't post inline comments.
+comments_location_policy = "summary"
