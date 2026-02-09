@@ -478,14 +478,16 @@ func (c *Build) createBuildArgExpander() (dockerfile.SingleWordExpander, error) 
 		if value, ok := args[word]; ok {
 			return value, nil
 		}
-		// Return empty string for unknown variables (best-effort expansion)
+		// Unknown variables should expand to empty string, which is the proper
+		// Containerfile behavior.
 		return "", nil
 	}, nil
 }
 
 func createEnvExpander() dockerfile.SingleWordExpander {
 	return func(word string) (string, error) {
-		// Never resolve environment variables for now
+		// The envExpander() is unnecessary. We can remove it when we update
+		// to the latest dockerfile-json version. Just return empty strings for now.
 		return "", nil
 	}
 }
