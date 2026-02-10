@@ -1,6 +1,7 @@
 package integration_tests
 
 import (
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"os"
@@ -198,6 +199,66 @@ func setupImageRegistry(t *testing.T) ImageRegistry {
 func writeContainerfile(contextDir, content string) {
 	err := os.WriteFile(path.Join(contextDir, "Containerfile"), []byte(content), 0644)
 	Expect(err).ToNot(HaveOccurred())
+}
+
+func getImageLabels(container *TestRunnerContainer, imageRef string) map[string]string {
+	stdout, _, err := container.ExecuteCommandWithOutput("buildah", "inspect", imageRef)
+	Expect(err).ToNot(HaveOccurred())
+
+	var inspect struct {
+		OCIv1 struct {
+			Config struct {
+				Labels map[string]string
+			} `json:"config"`
+		}
+	}
+
+	err = json.Unmarshal([]byte(stdout), &inspect)
+	Expect(err).ToNot(HaveOccurred())
+
+	return inspect.OCIv1.Config.Labels
+}
+
+func getContainerfileLabels(container *TestRunnerContainer, containerfileJsonPath string) map[string]string {
+	containerfileJSON, err := container.GetFileContent(containerfileJsonPath)
+	Expect(err).ToNot(HaveOccurred())
+
+	// Unmarshal into a generic structure.
+	// Can't unmarshal into the Dockerfile struct from dockerfile-json, because some of the fields
+	// are of type instruction.Command (from buildkit), which is an interface type and can't be
+	// unmarshalled without a custom UnmarshalJSON method.
+	var containerfile struct {
+		Stages []struct {
+			Commands []struct {
+				Name   string
+				Labels []struct {
+					Key     string
+					Value   string
+				}
+			}
+		}
+	}
+
+	err = json.Unmarshal([]byte(containerfileJSON), &containerfile)
+	Expect(err).ToNot(HaveOccurred())
+
+	labels := make(map[string]string)
+	for _, cmd := range containerfile.Stages[0].Commands {
+		if strings.ToLower(cmd.Name) == "label" {
+			for _, label := range cmd.Labels {
+				labels[label.Key] = label.Value
+			}
+		}
+	}
+	return labels
+}
+
+func formatAsKeyValuePairs(m map[string]string) []string {
+	var pairs []string
+	for k, v := range m {
+		pairs = append(pairs, k+"="+v)
+	}
+	return pairs
 }
 
 func TestBuild(t *testing.T) {
@@ -457,11 +518,15 @@ ARG NAME
 ARG VERSION
 ARG AUTHOR
 ARG VENDOR
+ARG WITH_DEFAULT=default
+ARG UNDEFINED
 
 LABEL name=$NAME
 LABEL version=$VERSION
 LABEL author=$AUTHOR
 LABEL vendor=$VENDOR
+LABEL buildarg-with-default=$WITH_DEFAULT
+LABEL undefined-buildarg=$UNDEFINED
 
 LABEL test.label="build-args-test"
 `)
@@ -471,13 +536,16 @@ LABEL test.label="build-args-test"
 		})
 
 		outputRef := "localhost/test-image-build-args:" + GenerateUniqueTag(t)
+		// Also verify that build args are handled properly for Containerfile parsing
+		containerfileJsonPath := "/workspace/parsed-containerfile.json"
 
 		buildParams := BuildParams{
-			Context:       contextDir,
-			OutputRef:     outputRef,
-			Push:          false,
-			BuildArgs:     []string{"NAME=foo", "VERSION=1.2.3"},
-			BuildArgsFile: "/workspace/build-args-file",
+			Context:                 contextDir,
+			OutputRef:               outputRef,
+			Push:                    false,
+			BuildArgs:               []string{"NAME=foo", "VERSION=1.2.3"},
+			BuildArgsFile:           "/workspace/build-args-file",
+			ContainerfileJsonOutput: containerfileJsonPath,
 		}
 
 		container := setupBuildContainerWithCleanup(t, buildParams, nil)
@@ -485,18 +553,22 @@ LABEL test.label="build-args-test"
 		err := runBuild(container, buildParams)
 		Expect(err).ToNot(HaveOccurred())
 
-		stdout, _, err := container.ExecuteCommandWithOutput(
-			"buildah", "inspect", "--format", `{{ range $k, $v := .OCIv1.Config.Labels }}{{ printf "%s=%s\n" $k $v }}{{ end }}`, outputRef,
-		)
-		Expect(err).ToNot(HaveOccurred())
-
-		labelLines := strings.Split(strings.TrimSpace(stdout), "\n")
-		Expect(labelLines).To(ContainElements(
+		expectedLabels := []string{
 			"name=foo",
 			"version=1.2.3",
 			"author=John Doe",
 			"vendor=konflux-ci.dev",
-		))
+			"buildarg-with-default=default",
+			"undefined-buildarg=",
+		}
+
+		// Verify image labels
+		imageLabels := formatAsKeyValuePairs(getImageLabels(container, outputRef))
+		Expect(imageLabels).To(ContainElements(expectedLabels))
+
+		// Verify the parsed Containerfile has the same label values
+		containerfileLabels := formatAsKeyValuePairs(getContainerfileLabels(container, containerfileJsonPath))
+		Expect(containerfileLabels).To(ContainElements(expectedLabels))
 	})
 
 	t.Run("ContainerfileJsonOutput", func(t *testing.T) {

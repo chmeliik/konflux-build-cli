@@ -3,6 +3,7 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,6 +13,7 @@ import (
 	"github.com/konflux-ci/konflux-build-cli/pkg/common"
 	"github.com/spf13/cobra"
 
+	"github.com/keilerkonzept/dockerfile-json/pkg/buildargs"
 	"github.com/keilerkonzept/dockerfile-json/pkg/dockerfile"
 	l "github.com/konflux-ci/konflux-build-cli/pkg/logger"
 )
@@ -414,7 +416,46 @@ func (c *Build) parseContainerfile() (*dockerfile.Dockerfile, error) {
 		return nil, fmt.Errorf("failed to parse %s: %w", c.containerfilePath, err)
 	}
 
+	argExp, err := c.createBuildArgExpander()
+	if err != nil {
+		return nil, fmt.Errorf("failed to process build args: %w", err)
+	}
+
+	containerfile.Expand(argExp)
 	return containerfile, nil
+}
+
+func (c *Build) createBuildArgExpander() (dockerfile.SingleWordExpander, error) {
+	args := make(map[string]string)
+
+	// Load from --build-args-file
+	if c.Params.BuildArgsFile != "" {
+		fileArgs, err := buildargs.ParseBuildArgFile(c.Params.BuildArgsFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read build args file: %w", err)
+		}
+		maps.Copy(args, fileArgs)
+	}
+
+	// CLI --build-args take precedence
+	for _, arg := range c.Params.BuildArgs {
+		key, value, hasValue := strings.Cut(arg, "=")
+		if hasValue {
+			args[key] = value
+		} else if valueFromEnv, ok := os.LookupEnv(key); ok {
+			args[key] = valueFromEnv
+		}
+	}
+
+	// Return the kind of "expander" function expected by the dockerfile-json API
+	// (takes the name of a build arg, returns the value or error for undefined build args)
+	argExp := func(word string) (string, error) {
+		if value, ok := args[word]; ok {
+			return value, nil
+		}
+		return "", fmt.Errorf("not defined: $%s", word)
+	}
+	return argExp, nil
 }
 
 func (c *Build) buildImage() error {
