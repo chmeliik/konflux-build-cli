@@ -383,6 +383,15 @@ func (c *TestRunnerContainer) GetTaskResultValue(resultFilePath string) (string,
 	return resultValue, nil
 }
 
+func (c *TestRunnerContainer) GetHomeDir() (string, error) {
+	execCmd := []string{"exec", "-t", c.name, "bash", "-c", "echo -n $HOME"}
+	homeDir, _, _, err := c.executor.Execute(containerTool, execCmd...)
+	if err != nil {
+		return "", err
+	}
+	return homeDir, nil
+}
+
 func (c *TestRunnerContainer) InjectDockerAuth(registry, login, password string) error {
 	c.ensureContainerRunning()
 
@@ -397,8 +406,7 @@ func (c *TestRunnerContainer) InjectDockerAuth(registry, login, password string)
 	}
 	defer func() { os.Remove(filePath) }()
 
-	execCmd := []string{"exec", "-t", c.name, "bash", "-c", "echo -n $HOME"}
-	homeDir, _, _, err := c.executor.Execute(containerTool, execCmd...)
+	homeDir, err := c.GetHomeDir()
 	if err != nil {
 		return err
 	}

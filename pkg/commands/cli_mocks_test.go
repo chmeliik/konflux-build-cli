@@ -45,3 +45,17 @@ func (m *mockBuildahCli) Push(args *cliwrappers.BuildahPushArgs) (string, error)
 	}
 	return "", nil
 }
+
+var _ cliwrappers.OrasCliInterface = &mockOrasCli{}
+
+type mockOrasCli struct {
+	Executor cliwrappers.CliExecutorInterface
+	PushFunc func(args *cliwrappers.OrasPushArgs) (string, string, error)
+}
+
+func (m *mockOrasCli) Push(args *cliwrappers.OrasPushArgs) (string, string, error) {
+	if m.PushFunc != nil {
+		return m.PushFunc(args)
+	}
+	return "", "", nil
+}

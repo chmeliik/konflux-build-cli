@@ -9,8 +9,10 @@ require (
 	github.com/h2non/gock v1.2.0
 	github.com/onsi/gomega v1.38.0
 	github.com/opencontainers/go-digest v1.0.0
+	github.com/opencontainers/image-spec v1.1.1
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.9.1
+	oras.land/oras-go/v2 v2.6.0
 )
 
 require (
@@ -22,6 +24,7 @@ require (
 	github.com/onsi/ginkgo/v2 v2.25.1 // indirect
 	github.com/spf13/pflag v1.0.6 // indirect
 	golang.org/x/net v0.43.0 // indirect
+	golang.org/x/sync v0.16.0 // indirect
 	golang.org/x/sys v0.35.0 // indirect
 	golang.org/x/text v0.28.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20180628173108-788fd7840127 // indirect
