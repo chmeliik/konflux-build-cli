@@ -6,6 +6,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 
 	cliWrappers "github.com/konflux-ci/konflux-build-cli/pkg/cliwrappers"
@@ -40,6 +41,10 @@ type TestRunnerContainer struct {
 	executor cliWrappers.CliExecutorInterface
 
 	containerStatus ContainerStatus
+
+	// Time to wait before sending SIGKILL to an unresponsive container when deleting
+	// (does not apply to docker), see the Delete() method
+	killTimeout *int
 }
 
 // ContainerOption is a functional-style option for configuring TestRunnerContainer.
@@ -106,6 +111,10 @@ func WithWorkdir(workdir string) ContainerOption {
 	return func(c *TestRunnerContainer) {
 		c.SetWorkdir(workdir)
 	}
+}
+
+func (c *TestRunnerContainer) SetKillTimeout(timeout int) {
+	c.killTimeout = &timeout
 }
 
 func (c *TestRunnerContainer) AddEnv(key, value string) {
@@ -226,6 +235,9 @@ func (c *TestRunnerContainer) Start() error {
 
 	if c.ReplaceEntrypoint {
 		args = append(args, "--entrypoint", "sleep", c.image, "infinity")
+		// 'sleep' is the entrypoint, it runs as PID 1 and will never respond to SIGTERM.
+		// Send SIGKILL immediately.
+		c.SetKillTimeout(0)
 	} else {
 		args = append(args, c.image)
 	}
@@ -258,7 +270,12 @@ func (c *TestRunnerContainer) StartWithRegistryIntegration(imageRegistry ImageRe
 }
 
 func (c *TestRunnerContainer) Delete() error {
-	stdout, stderr, _, err := c.executor.Execute(containerTool, "rm", "-f", c.name)
+	args := []string{"rm", "-f", c.name}
+	// Docker always uses SIGKILL immediately and doesn't have a --time flag
+	if c.killTimeout != nil && containerTool != "docker" {
+		args = append(args, "--time", strconv.Itoa(*c.killTimeout))
+	}
+	stdout, stderr, _, err := c.executor.Execute(containerTool, args...)
 	if err == nil {
 		c.containerStatus = ContainerStatus_Deleted
 	} else {
