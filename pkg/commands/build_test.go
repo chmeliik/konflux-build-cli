@@ -503,6 +503,293 @@ func Test_Build_setSecretArgs(t *testing.T) {
 	})
 }
 
+func Test_Build_parseContainerfile(t *testing.T) {
+	g := NewWithT(t)
+
+	t.Run("should successfully parse valid Containerfile", func(t *testing.T) {
+		tempDir := t.TempDir()
+		containerfilePath := filepath.Join(tempDir, "Containerfile")
+		os.WriteFile(containerfilePath, []byte("FROM scratch\nRUN echo hello"), 0644)
+
+		c := &Build{containerfilePath: containerfilePath, Params: &BuildParams{}}
+		result, err := c.parseContainerfile()
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(result).ToNot(BeNil())
+	})
+
+	t.Run("should return error for non-existent file", func(t *testing.T) {
+		c := &Build{containerfilePath: "/nonexistent/Containerfile", Params: &BuildParams{}}
+		result, err := c.parseContainerfile()
+
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(MatchRegexp("failed to parse /nonexistent/Containerfile:.* no such file or directory"))
+		g.Expect(result).To(BeNil())
+	})
+
+	t.Run("should return error for invalid Containerfile syntax", func(t *testing.T) {
+		tempDir := t.TempDir()
+		containerfilePath := filepath.Join(tempDir, "Containerfile")
+		os.WriteFile(containerfilePath, []byte("INVALID SYNTAX HERE"), 0644)
+
+		c := &Build{containerfilePath: containerfilePath, Params: &BuildParams{}}
+		result, err := c.parseContainerfile()
+
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(MatchRegexp("failed to parse .*: unknown instruction: INVALID"))
+		g.Expect(result).To(BeNil())
+	})
+}
+
+func Test_Build_writeContainerfileJson(t *testing.T) {
+	g := NewWithT(t)
+
+	t.Run("should successfully write JSON to specified path", func(t *testing.T) {
+		tempDir := t.TempDir()
+		outputPath := filepath.Join(tempDir, "containerfile.json")
+
+		containerfilePath := filepath.Join(tempDir, "Containerfile")
+		os.WriteFile(containerfilePath, []byte("FROM scratch"), 0644)
+
+		c := &Build{containerfilePath: containerfilePath, Params: &BuildParams{}}
+		containerfile, err := c.parseContainerfile()
+		g.Expect(err).ToNot(HaveOccurred())
+
+		err = c.writeContainerfileJson(containerfile, outputPath)
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(outputPath).To(BeAnExistingFile())
+
+		content, err := os.ReadFile(outputPath)
+		g.Expect(err).ToNot(HaveOccurred())
+
+		// Full file content tested in integration tests
+		g.Expect(string(content)).To(ContainSubstring(`"Stages":`))
+	})
+
+	t.Run("should return error when path is not writable", func(t *testing.T) {
+		tempDir := t.TempDir()
+		containerfilePath := filepath.Join(tempDir, "Containerfile")
+		os.WriteFile(containerfilePath, []byte("FROM scratch"), 0644)
+
+		c := &Build{containerfilePath: containerfilePath, Params: &BuildParams{}}
+		containerfile, err := c.parseContainerfile()
+		g.Expect(err).ToNot(HaveOccurred())
+
+		unwritablePath := "/nonexistent/directory/containerfile.json"
+		err = c.writeContainerfileJson(containerfile, unwritablePath)
+
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("failed to write Containerfile JSON"))
+	})
+}
+
+func Test_Build_createBuildArgExpander(t *testing.T) {
+	g := NewWithT(t)
+
+	t.Run("should expand build args from CLI with KEY=value format", func(t *testing.T) {
+		c := &Build{
+			Params: &BuildParams{
+				BuildArgs: []string{"NAME=foo", "VERSION=1.2.3"},
+			},
+		}
+
+		expander, err := c.createBuildArgExpander()
+		g.Expect(err).ToNot(HaveOccurred())
+
+		value, err := expander("NAME")
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(value).To(Equal("foo"))
+
+		value, err = expander("VERSION")
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(value).To(Equal("1.2.3"))
+	})
+
+	t.Run("should expand build args from CLI with KEY format (env lookup)", func(t *testing.T) {
+		os.Setenv("TEST_ENV_VAR", "from-env")
+		defer os.Unsetenv("TEST_ENV_VAR")
+
+		c := &Build{
+			Params: &BuildParams{
+				BuildArgs: []string{"TEST_ENV_VAR"},
+			},
+		}
+
+		expander, err := c.createBuildArgExpander()
+		g.Expect(err).ToNot(HaveOccurred())
+
+		value, err := expander("TEST_ENV_VAR")
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(value).To(Equal("from-env"))
+	})
+
+	t.Run("should expand build args from file", func(t *testing.T) {
+		tempDir := t.TempDir()
+		testutil.WriteFileTree(t, tempDir, map[string]string{
+			"build-args": "AUTHOR=John Doe\nVENDOR=konflux-ci.dev\n",
+		})
+
+		c := &Build{
+			Params: &BuildParams{
+				BuildArgsFile: filepath.Join(tempDir, "build-args"),
+			},
+		}
+
+		expander, err := c.createBuildArgExpander()
+		g.Expect(err).ToNot(HaveOccurred())
+
+		value, err := expander("AUTHOR")
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(value).To(Equal("John Doe"))
+
+		value, err = expander("VENDOR")
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(value).To(Equal("konflux-ci.dev"))
+	})
+
+	t.Run("should give CLI args precedence over file args", func(t *testing.T) {
+		tempDir := t.TempDir()
+		testutil.WriteFileTree(t, tempDir, map[string]string{
+			"build-args": "NAME=file-value\nOTHER=from-file\n",
+		})
+
+		c := &Build{
+			Params: &BuildParams{
+				BuildArgs:     []string{"NAME=cli-value"},
+				BuildArgsFile: filepath.Join(tempDir, "build-args"),
+			},
+		}
+
+		expander, err := c.createBuildArgExpander()
+		g.Expect(err).ToNot(HaveOccurred())
+
+		value, err := expander("NAME")
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(value).To(Equal("cli-value"))
+
+		value, err = expander("OTHER")
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(value).To(Equal("from-file"))
+	})
+
+	t.Run("should provide built-in platform args by default", func(t *testing.T) {
+		c := &Build{
+			Params: &BuildParams{},
+		}
+
+		expander, err := c.createBuildArgExpander()
+		g.Expect(err).ToNot(HaveOccurred())
+
+		// Check that all built-in platform args are available
+		platformArgs := []string{
+			"TARGETPLATFORM", "TARGETOS", "TARGETARCH", "TARGETVARIANT",
+			"BUILDPLATFORM", "BUILDOS", "BUILDARCH", "BUILDVARIANT",
+		}
+
+		for _, arg := range platformArgs {
+			value, err := expander(arg)
+			// TARGETVARIANT and BUILDVARIANT can be empty on non-ARM platforms
+			if arg == "TARGETVARIANT" || arg == "BUILDVARIANT" {
+				g.Expect(err).ToNot(HaveOccurred())
+			} else {
+				g.Expect(err).ToNot(HaveOccurred())
+				g.Expect(value).ToNot(BeEmpty(), "arg %s should not be empty", arg)
+			}
+		}
+	})
+
+	t.Run("should allow file args to override built-in platform args", func(t *testing.T) {
+		tempDir := t.TempDir()
+		testutil.WriteFileTree(t, tempDir, map[string]string{
+			"build-args": "TARGETOS=custom-os\nTARGETARCH=custom-arch\n",
+		})
+
+		c := &Build{
+			Params: &BuildParams{
+				BuildArgsFile: filepath.Join(tempDir, "build-args"),
+			},
+		}
+
+		expander, err := c.createBuildArgExpander()
+		g.Expect(err).ToNot(HaveOccurred())
+
+		value, err := expander("TARGETOS")
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(value).To(Equal("custom-os"))
+
+		value, err = expander("TARGETARCH")
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(value).To(Equal("custom-arch"))
+	})
+
+	t.Run("should allow CLI args to override built-in platform args", func(t *testing.T) {
+		c := &Build{
+			Params: &BuildParams{
+				BuildArgs: []string{"TARGETOS=custom-os", "TARGETARCH=custom-arch"},
+			},
+		}
+
+		expander, err := c.createBuildArgExpander()
+		g.Expect(err).ToNot(HaveOccurred())
+
+		value, err := expander("TARGETOS")
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(value).To(Equal("custom-os"))
+
+		value, err = expander("TARGETARCH")
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(value).To(Equal("custom-arch"))
+	})
+
+	t.Run("should return error for undefined build arg", func(t *testing.T) {
+		c := &Build{
+			Params: &BuildParams{},
+		}
+
+		expander, err := c.createBuildArgExpander()
+		g.Expect(err).ToNot(HaveOccurred())
+
+		value, err := expander("UNDEFINED")
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("not defined"))
+		g.Expect(value).To(BeEmpty())
+	})
+
+	t.Run("should error when build args file not found", func(t *testing.T) {
+		c := &Build{
+			Params: &BuildParams{
+				BuildArgsFile: "/nonexistent/build-args",
+			},
+		}
+
+		expander, err := c.createBuildArgExpander()
+
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("failed to read build args file"))
+		g.Expect(expander).To(BeNil())
+	})
+
+	t.Run("should error when build args file has invalid format", func(t *testing.T) {
+		tempDir := t.TempDir()
+		testutil.WriteFileTree(t, tempDir, map[string]string{
+			"build-args": "INVALID LINE\n",
+		})
+
+		c := &Build{
+			Params: &BuildParams{
+				BuildArgsFile: filepath.Join(tempDir, "build-args"),
+			},
+		}
+
+		expander, err := c.createBuildArgExpander()
+
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("failed to read build args file"))
+		g.Expect(expander).To(BeNil())
+	})
+}
+
 func Test_Build_Run(t *testing.T) {
 	g := NewWithT(t)
 
