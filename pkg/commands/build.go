@@ -556,7 +556,7 @@ func (c *Build) parseContainerfile() (*dockerfile.Dockerfile, error) {
 func (c *Build) createBuildArgExpander() (dockerfile.SingleWordExpander, error) {
 	// Define built-in ARG variables
 	// See https://docs.docker.com/build/building/variables/#multi-platform-build-arguments
-	platform := platforms.DefaultSpec()
+	platform := platforms.Normalize(platforms.DefaultSpec())
 	args := map[string]string{
 		// We current don't explicitly expose the --platform flag, so the TARGET* values always
 		// match the BUILD* values. If we add --platform handling, we would want to respect it here.
