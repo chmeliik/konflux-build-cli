@@ -214,6 +214,8 @@ type Build struct {
 
 	containerfilePath string
 	buildahSecrets    []cliWrappers.BuildahSecret
+	mergedLabels      []string
+	mergedAnnotations []string
 }
 
 func NewBuild(cmd *cobra.Command, extraArgs []string) (*Build, error) {
@@ -261,6 +263,10 @@ func (c *Build) Run() error {
 
 	containerfile, err := c.parseContainerfile()
 	if err != nil {
+		return err
+	}
+
+	if err := c.processLabelsAndAnnotations(); err != nil {
 		return err
 	}
 
@@ -633,13 +639,13 @@ func processKeyValueEnvs(args []string) map[string]string {
 //
 // In addition to the OCI annotations (and labels), if AddLegacyLabels is enabled,
 // adds labels based on https://github.com/projectatomic/ContainerApplicationGenericLabels.
-func (c *Build) mergeDefaultLabelsAndAnnotations() ([]string, []string, error) {
+func (c *Build) processLabelsAndAnnotations() error {
 	var defaultLabels []string
 	var defaultAnnotations []string
 
 	buildTimeStr, err := c.getBuildTimeRFC3339()
 	if err != nil {
-		return nil, nil, fmt.Errorf("determining build timestamp: %w", err)
+		return fmt.Errorf("determining build timestamp: %w", err)
 	}
 	ociCreated := "org.opencontainers.image.created=" + buildTimeStr
 	defaultAnnotations = append(defaultAnnotations, ociCreated)
@@ -691,7 +697,7 @@ func (c *Build) mergeDefaultLabelsAndAnnotations() ([]string, []string, error) {
 	if c.Params.AnnotationsFile != "" {
 		fileAnnotations, err := parseAnnotationsFile(c.Params.AnnotationsFile)
 		if err != nil {
-			return nil, nil, fmt.Errorf("parsing annotations file: %w", err)
+			return fmt.Errorf("parsing annotations file: %w", err)
 		}
 		// --annotations-file takes precedence over defaults
 		mergedAnnotations = append(mergedAnnotations, fileAnnotations...)
@@ -699,7 +705,9 @@ func (c *Build) mergeDefaultLabelsAndAnnotations() ([]string, []string, error) {
 	// --annotations take precedence over --annotations-file
 	mergedAnnotations = append(mergedAnnotations, c.Params.Annotations...)
 
-	return mergedLabels, mergedAnnotations, nil
+	c.mergedLabels = mergedLabels
+	c.mergedAnnotations = mergedAnnotations
+	return nil
 }
 
 func (c *Build) getBuildTimeRFC3339() (string, error) {
@@ -753,11 +761,6 @@ func goArchToArchitectureLabel(goarch string) string {
 func (c *Build) buildImage() error {
 	l.Logger.Info("Building container image...")
 
-	mergedLabels, mergedAnnotations, err := c.mergeDefaultLabelsAndAnnotations()
-	if err != nil {
-		return err
-	}
-
 	originalCwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -775,8 +778,8 @@ func (c *Build) buildImage() error {
 		BuildArgs:        c.Params.BuildArgs,
 		BuildArgsFile:    c.Params.BuildArgsFile,
 		Envs:             c.Params.Envs,
-		Labels:           mergedLabels,
-		Annotations:      mergedAnnotations,
+		Labels:           c.mergedLabels,
+		Annotations:      c.mergedAnnotations,
 		SourceDateEpoch:  c.Params.SourceDateEpoch,
 		RewriteTimestamp: c.Params.RewriteTimestamp,
 		ExtraArgs:        c.Params.ExtraArgs,

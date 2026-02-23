@@ -1092,7 +1092,7 @@ func Test_goArchToArchitectureLabel(t *testing.T) {
 	}
 }
 
-func Test_Build_mergeDefaultLabelsAndAnnotations(t *testing.T) {
+func Test_Build_processLabelsAndAnnotations(t *testing.T) {
 	g := NewWithT(t)
 
 	t.Run("should add default labels and annotations with provided values", func(t *testing.T) {
@@ -1104,15 +1104,15 @@ func Test_Build_mergeDefaultLabelsAndAnnotations(t *testing.T) {
 			},
 		}
 
-		labels, annotations, err := c.mergeDefaultLabelsAndAnnotations()
+		err := c.processLabelsAndAnnotations()
 		g.Expect(err).ToNot(HaveOccurred())
 
-		g.Expect(labels).To(Equal([]string{
+		g.Expect(c.mergedLabels).To(Equal([]string{
 			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
 			"org.opencontainers.image.source=https://github.com/org/repo",
 			"org.opencontainers.image.revision=abc123",
 		}))
-		g.Expect(annotations).To(Equal([]string{
+		g.Expect(c.mergedAnnotations).To(Equal([]string{
 			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
 			"org.opencontainers.image.source=https://github.com/org/repo",
 			"org.opencontainers.image.revision=abc123",
@@ -1124,15 +1124,15 @@ func Test_Build_mergeDefaultLabelsAndAnnotations(t *testing.T) {
 			Params: &BuildParams{},
 		}
 
-		labels, annotations, err := c.mergeDefaultLabelsAndAnnotations()
+		err := c.processLabelsAndAnnotations()
 		g.Expect(err).ToNot(HaveOccurred())
 
-		g.Expect(labels).To(ConsistOf(
+		g.Expect(c.mergedLabels).To(ConsistOf(
 			MatchRegexp(`^org.opencontainers.image.created=.+Z$`),
 		))
-		g.Expect(annotations).To(Equal(labels))
+		g.Expect(c.mergedAnnotations).To(Equal(c.mergedLabels))
 
-		imageCreated := labels[0]
+		imageCreated := c.mergedLabels[0]
 
 		_, rfc3339time, _ := strings.Cut(imageCreated, "=")
 		timestamp, err := time.Parse(time.RFC3339, rfc3339time)
@@ -1158,17 +1158,17 @@ func Test_Build_mergeDefaultLabelsAndAnnotations(t *testing.T) {
 			},
 		}
 
-		labels, annotations, err := c.mergeDefaultLabelsAndAnnotations()
+		err := c.processLabelsAndAnnotations()
 		g.Expect(err).ToNot(HaveOccurred())
 
-		g.Expect(labels).To(Equal([]string{
+		g.Expect(c.mergedLabels).To(Equal([]string{
 			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
 			"org.opencontainers.image.source=https://github.com/org/repo",
 			"org.opencontainers.image.revision=abc123",
 			"some-label=foo",
 			"org.opencontainers.image.revision=main",
 		}))
-		g.Expect(annotations).To(Equal([]string{
+		g.Expect(c.mergedAnnotations).To(Equal([]string{
 			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
 			"org.opencontainers.image.source=https://github.com/org/repo",
 			"org.opencontainers.image.revision=abc123",
@@ -1188,11 +1188,11 @@ func Test_Build_mergeDefaultLabelsAndAnnotations(t *testing.T) {
 			},
 		}
 
-		labels, annotations, err := c.mergeDefaultLabelsAndAnnotations()
+		err := c.processLabelsAndAnnotations()
 		g.Expect(err).ToNot(HaveOccurred())
 
 		arch := goArchToArchitectureLabel(runtime.GOARCH)
-		g.Expect(labels).To(Equal([]string{
+		g.Expect(c.mergedLabels).To(Equal([]string{
 			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
 			"org.opencontainers.image.source=https://github.com/org/repo",
 			"org.opencontainers.image.revision=abc123",
@@ -1203,7 +1203,7 @@ func Test_Build_mergeDefaultLabelsAndAnnotations(t *testing.T) {
 			"vcs-type=git",
 		}))
 		// Should be added *only* as labels, not as annotations
-		g.Expect(annotations).To(Equal([]string{
+		g.Expect(c.mergedAnnotations).To(Equal([]string{
 			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
 			"org.opencontainers.image.source=https://github.com/org/repo",
 			"org.opencontainers.image.revision=abc123",
@@ -1218,14 +1218,14 @@ func Test_Build_mergeDefaultLabelsAndAnnotations(t *testing.T) {
 			},
 		}
 
-		labels, annotations, err := c.mergeDefaultLabelsAndAnnotations()
+		err := c.processLabelsAndAnnotations()
 		g.Expect(err).ToNot(HaveOccurred())
 
-		g.Expect(labels).To(ContainElements(
+		g.Expect(c.mergedLabels).To(ContainElements(
 			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
 			"build-date=2026-01-01T00:00:00Z",
 		))
-		g.Expect(annotations).To(ContainElements(
+		g.Expect(c.mergedAnnotations).To(ContainElements(
 			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
 		))
 	})
@@ -1237,11 +1237,11 @@ func Test_Build_mergeDefaultLabelsAndAnnotations(t *testing.T) {
 			},
 		}
 
-		labels, annotations, err := c.mergeDefaultLabelsAndAnnotations()
+		err := c.processLabelsAndAnnotations()
 		g.Expect(err).ToNot(HaveOccurred())
 
-		g.Expect(labels).To(ContainElement("quay.expires-after=2w"))
-		g.Expect(annotations).ToNot(ContainElement("quay.expires-after=2w"))
+		g.Expect(c.mergedLabels).To(ContainElement("quay.expires-after=2w"))
+		g.Expect(c.mergedAnnotations).ToNot(ContainElement("quay.expires-after=2w"))
 	})
 
 	t.Run("should return error for invalid legacy-build-timestamp", func(t *testing.T) {
@@ -1251,7 +1251,7 @@ func Test_Build_mergeDefaultLabelsAndAnnotations(t *testing.T) {
 			},
 		}
 
-		_, _, err := c.mergeDefaultLabelsAndAnnotations()
+		err := c.processLabelsAndAnnotations()
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("determining build timestamp: parsing legacy-build-timestamp:"))
 	})
@@ -1263,7 +1263,7 @@ func Test_Build_mergeDefaultLabelsAndAnnotations(t *testing.T) {
 			},
 		}
 
-		_, _, err := c.mergeDefaultLabelsAndAnnotations()
+		err := c.processLabelsAndAnnotations()
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("determining build timestamp: parsing source-date-epoch:"))
 	})
@@ -1289,9 +1289,9 @@ with.hash.char=this comment # is not a comment
 			},
 		}
 
-		_, annotations, err := c.mergeDefaultLabelsAndAnnotations()
+		err := c.processLabelsAndAnnotations()
 		g.Expect(err).ToNot(HaveOccurred())
-		g.Expect(annotations).To(Equal([]string{
+		g.Expect(c.mergedAnnotations).To(Equal([]string{
 			// always added
 			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
 			// from file, sorted alphabetically
@@ -1308,7 +1308,7 @@ with.hash.char=this comment # is not a comment
 			},
 		}
 
-		_, _, err := c.mergeDefaultLabelsAndAnnotations()
+		err := c.processLabelsAndAnnotations()
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(MatchRegexp("parsing annotations file: .* /nonexistent/annotations.cfg"))
 	})
@@ -1325,7 +1325,7 @@ with.hash.char=this comment # is not a comment
 			},
 		}
 
-		_, _, err := c.mergeDefaultLabelsAndAnnotations()
+		err := c.processLabelsAndAnnotations()
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(MatchRegexp("parsing annotations file: .*annotations.cfg:1: expected arg=value"))
 	})
