@@ -229,7 +229,13 @@ func (b *BuildahCli) Push(args *BuildahPushArgs) (string, error) {
 
 	buildahLog.Debugf("Running command:\nbuildah %s", strings.Join(buildahArgs, " "))
 
-	_, _, _, err = b.Executor.ExecuteWithOutput("buildah", buildahArgs...)
+	retryer := NewRetryer(func() (string, string, int, error) {
+		return b.Executor.ExecuteWithOutput("buildah", buildahArgs...)
+	}).WithImageRegistryPreset().
+		StopIfOutputContains("unauthorized").
+		StopIfOutputContains("authentication required")
+
+	_, _, _, err = retryer.Run()
 	if err != nil {
 		buildahLog.Errorf("buildah push failed: %s", err.Error())
 		return "", err

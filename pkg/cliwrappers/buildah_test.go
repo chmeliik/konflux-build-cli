@@ -17,6 +17,14 @@ func setupBuildahCli() (*cliwrappers.BuildahCli, *mockExecutor) {
 	return buildahCli, executor
 }
 
+func ensureRetryerDisabled(t *testing.T) {
+	retryerDisabled := cliwrappers.DisableRetryer
+	if !retryerDisabled {
+		cliwrappers.DisableRetryer = true
+		t.Cleanup(func() { cliwrappers.DisableRetryer = false })
+	}
+}
+
 func TestBuildahCli_Build(t *testing.T) {
 	g := NewWithT(t)
 
@@ -225,6 +233,8 @@ func TestBuildahCli_Push(t *testing.T) {
 
 	const image = "quay.io/org/image:tag"
 	const digest = "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+
+	ensureRetryerDisabled(t)
 
 	mockSuccessfulPush := func(captureArgs *[]string) func(command string, args ...string) (string, string, int, error) {
 		return func(command string, args ...string) (string, string, int, error) {
