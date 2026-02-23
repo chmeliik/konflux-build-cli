@@ -30,6 +30,7 @@ var _ cliwrappers.BuildahCliInterface = &mockBuildahCli{}
 type mockBuildahCli struct {
 	BuildFunc func(args *cliwrappers.BuildahBuildArgs) error
 	PushFunc  func(args *cliwrappers.BuildahPushArgs) (string, error)
+	PullFunc  func(args *cliwrappers.BuildahPullArgs) error
 }
 
 func (m *mockBuildahCli) Build(args *cliwrappers.BuildahBuildArgs) error {
@@ -44,6 +45,13 @@ func (m *mockBuildahCli) Push(args *cliwrappers.BuildahPushArgs) (string, error)
 		return m.PushFunc(args)
 	}
 	return "", nil
+}
+
+func (m *mockBuildahCli) Pull(args *cliwrappers.BuildahPullArgs) error {
+	if m.PullFunc != nil {
+		return m.PullFunc(args)
+	}
+	return nil
 }
 
 var _ cliwrappers.OrasCliInterface = &mockOrasCli{}

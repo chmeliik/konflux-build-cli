@@ -354,6 +354,60 @@ func TestBuildahCli_Push(t *testing.T) {
 	})
 }
 
+func TestBuildahCli_Pull(t *testing.T) {
+	g := NewWithT(t)
+
+	const image = "quay.io/org/image:tag"
+
+	ensureRetryerDisabled(t)
+
+	t.Run("should pull image", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedArgs []string
+		executor.executeWithOutput = func(command string, args ...string) (string, string, int, error) {
+			g.Expect(command).To(Equal("buildah"))
+			capturedArgs = args
+			return "", "", 0, nil
+		}
+
+		pullArgs := &cliwrappers.BuildahPullArgs{
+			Image: image,
+		}
+
+		err := buildahCli.Pull(pullArgs)
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(capturedArgs[0]).To(Equal("pull"))
+		g.Expect(capturedArgs[1]).To(Equal(image))
+	})
+
+	t.Run("should error if buildah execution fails", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		executor.executeWithOutput = func(command string, args ...string) (string, string, int, error) {
+			return "", "", 1, errors.New("failed to execute buildah pull")
+		}
+
+		pullArgs := &cliwrappers.BuildahPullArgs{
+			Image: image,
+		}
+
+		err := buildahCli.Pull(pullArgs)
+
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(Equal("failed to execute buildah pull"))
+	})
+
+	t.Run("should error if image is empty", func(t *testing.T) {
+		buildahCli, _ := setupBuildahCli()
+		pullArgs := &cliwrappers.BuildahPullArgs{
+			Image: "",
+		}
+		err := buildahCli.Pull(pullArgs)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("image arg is empty"))
+	})
+}
+
 func TestBuildahBuildArgs_MakePathsAbsolute(t *testing.T) {
 	g := NewWithT(t)
 

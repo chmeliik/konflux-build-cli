@@ -15,6 +15,7 @@ var buildahLog = l.Logger.WithField("logger", "BuildahCli")
 type BuildahCliInterface interface {
 	Build(args *BuildahBuildArgs) error
 	Push(args *BuildahPushArgs) (string, error)
+	Pull(args *BuildahPullArgs) error
 }
 
 var _ BuildahCliInterface = &BuildahCli{}
@@ -250,4 +251,35 @@ func (b *BuildahCli) Push(args *BuildahPushArgs) (string, error) {
 
 	digest := strings.TrimSpace(string(content))
 	return digest, nil
+}
+
+type BuildahPullArgs struct {
+	Image string
+}
+
+// Pull an image from the registry to local storage.
+func (b *BuildahCli) Pull(args *BuildahPullArgs) error {
+	if args.Image == "" {
+		return errors.New("image arg is empty")
+	}
+
+	buildahArgs := []string{"pull", args.Image}
+
+	buildahLog.Debugf("Running command:\nbuildah %s", strings.Join(buildahArgs, " "))
+
+	retryer := NewRetryer(func() (string, string, int, error) {
+		return b.Executor.ExecuteWithOutput("buildah", buildahArgs...)
+	}).WithImageRegistryPreset().
+		StopIfOutputContains("unauthorized").
+		StopIfOutputContains("authentication required")
+
+	_, _, _, err := retryer.Run()
+	if err != nil {
+		buildahLog.Errorf("buildah pull failed: %s", err.Error())
+		return err
+	}
+
+	buildahLog.Debug("Pull completed successfully")
+
+	return nil
 }
