@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/keilerkonzept/dockerfile-json/pkg/dockerfile"
 	"github.com/konflux-ci/konflux-build-cli/pkg/cliwrappers"
 	"github.com/konflux-ci/konflux-build-cli/testutil"
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
@@ -861,10 +862,11 @@ func Test_Build_Run(t *testing.T) {
 		c = &Build{
 			CliWrappers: BuildCliWrappers{BuildahCli: _mockBuildahCli},
 			Params: &BuildParams{
-				OutputRef:     "quay.io/org/image:tag",
-				Context:       contextDir,
-				Containerfile: "",
-				Push:          true,
+				OutputRef:      "quay.io/org/image:tag",
+				Context:        contextDir,
+				Containerfile:  "",
+				Push:           true,
+				SkipInjections: true,
 			},
 			ResultsWriter: _mockResultsWriter,
 		}
@@ -962,6 +964,22 @@ func Test_Build_Run(t *testing.T) {
 		g.Expect(isBuildCalled).To(BeTrue())
 	})
 
+	t.Run("should clean up temporary workdir on exit", func(t *testing.T) {
+		beforeEach()
+
+		testutil.WriteFileTree(t, tempDir, map[string]string{
+			"tempWorkdir/file1.txt":             "hello",
+			"tempWorkdir/file2.txt":             "hi",
+			"tempWorkdir/buildinfo/labels.json": "{}",
+		})
+		c.tempWorkdir = filepath.Join(tempDir, "tempWorkdir")
+
+		err := c.Run()
+		g.Expect(err).ToNot(HaveOccurred())
+
+		g.Expect(c.tempWorkdir).ToNot(BeAnExistingFile(), "tempWorkdir should have been deleted")
+	})
+
 	t.Run("should error if build fails", func(t *testing.T) {
 		beforeEach()
 
@@ -1036,10 +1054,11 @@ func Test_Build_Run(t *testing.T) {
 		c := &Build{
 			CliWrappers: BuildCliWrappers{BuildahCli: _mockBuildahCli},
 			Params: &BuildParams{
-				OutputRef:     "quay.io/org/image:tag",
-				Containerfile: "Containerfile",
-				Context:       "context",
-				SecretDirs:    []string{"secrets"},
+				OutputRef:      "quay.io/org/image:tag",
+				Containerfile:  "Containerfile",
+				Context:        "context",
+				SecretDirs:     []string{"secrets"},
+				SkipInjections: true,
 			},
 			ResultsWriter: _mockResultsWriter,
 		}
@@ -1285,7 +1304,7 @@ with.hash.char=this comment # is not a comment
 		c := &Build{
 			Params: &BuildParams{
 				SourceDateEpoch: "1767225600",
-				AnnotationsFile:      filepath.Join(tempDir, "annotations.cfg"),
+				AnnotationsFile: filepath.Join(tempDir, "annotations.cfg"),
 			},
 		}
 
@@ -1329,4 +1348,82 @@ with.hash.char=this comment # is not a comment
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(MatchRegexp("parsing annotations file: .*annotations.cfg:1: expected arg=value"))
 	})
+}
+
+func Test_getInspectableRef(t *testing.T) {
+	g := NewWithT(t)
+
+	tests := []struct {
+		input       string
+		expectedRef string
+		expectedOk  bool
+	}{
+		// No ref
+		{"", "", false},
+		// Plain image refs (no transport)
+		{"registry.io/image:tag", "registry.io/image:tag", true},
+		{"ubuntu:latest", "ubuntu:latest", true},
+		// Supported transports
+		{"docker://registry.io/image:tag", "registry.io/image:tag", true},
+		{"containers-storage:localhost/image:tag", "localhost/image:tag", true},
+		// Unsupported transports
+		{"dir:/path/to/dir", "", false},
+		{"docker-archive:/path/to/archive.tar", "", false},
+		{"docker-daemon:image:tag", "", false},
+		{"oci:/path/to/dir", "", false},
+		{"oci-archive:/path/to/archive.tar", "", false},
+		{"sif:/path/to/file.sif", "", false},
+	}
+
+	for _, tc := range tests {
+		ref, ok := getInspectableRef(tc.input)
+		g.Expect(ok).To(Equal(tc.expectedOk), "getInspectableRef(%q) ok", tc.input)
+		g.Expect(ref).To(Equal(tc.expectedRef), "getInspectableRef(%q) ref", tc.input)
+	}
+}
+
+func Test_Build_injectBuildinfo(t *testing.T) {
+	g := NewWithT(t)
+
+	tempDir := t.TempDir()
+	containerfile := filepath.Join(tempDir, "Containerfile")
+	g.Expect(os.WriteFile(containerfile, []byte("FROM scratch"), 0644)).To(Succeed())
+
+	c := &Build{
+		Params: &BuildParams{
+			// Avoids the BuildahCli.Version() call
+			SourceDateEpoch: "0",
+		},
+		containerfilePath: containerfile,
+	}
+	defer c.cleanup()
+
+	var df *dockerfile.Dockerfile = nil
+	var userLabels []string = nil
+
+	g.Expect(c.injectBuildinfo(df, userLabels)).To(Succeed())
+
+	// Containerfile is copied to tempWorkdir
+	g.Expect(c.containerfileCopyPath).To(HavePrefix(c.tempWorkdir + "/"))
+	g.Expect(filepath.Base(c.containerfileCopyPath)).To(MatchRegexp(`^Containerfile-`))
+	// Original is unchanged
+	originalContent, err := os.ReadFile(c.containerfilePath)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(string(originalContent)).To(Equal("FROM scratch"))
+
+	// COPY appended correctly even though containerfile lacks trailing newline
+	copyContent, err := os.ReadFile(c.containerfileCopyPath)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(string(copyContent)).To(Equal(
+		"FROM scratch\nCOPY --from=.konflux-buildinfo . /usr/share/buildinfo/\n",
+	))
+
+	// labels.json created in tempWorkdir/buildinfo with valid JSON
+	labelsContent, err := os.ReadFile(filepath.Join(c.tempWorkdir, "buildinfo", "labels.json"))
+	g.Expect(string(labelsContent)).To(Equal("{}\n"))
+
+	// buildinfoBuildContext points to the buildinfo dir
+	g.Expect(c.buildinfoBuildContext).NotTo(BeNil())
+	g.Expect(c.buildinfoBuildContext.Name).To(Equal(".konflux-buildinfo"))
+	g.Expect(c.buildinfoBuildContext.Location).To(Equal(filepath.Join(c.tempWorkdir, "buildinfo")))
 }

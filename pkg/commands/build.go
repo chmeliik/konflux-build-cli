@@ -3,6 +3,7 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -21,6 +22,7 @@ import (
 	"github.com/keilerkonzept/dockerfile-json/pkg/buildargs"
 	"github.com/keilerkonzept/dockerfile-json/pkg/dockerfile"
 	l "github.com/konflux-ci/konflux-build-cli/pkg/logger"
+	"github.com/moby/buildkit/frontend/dockerfile/instructions"
 )
 
 var BuildParamsConfig = map[string]common.Parameter{
@@ -171,6 +173,14 @@ var BuildParamsConfig = map[string]common.Parameter{
 		TypeKind:   reflect.String,
 		Usage:      "Write the parsed Containerfile JSON representation to this path.",
 	},
+	"skip-injections": {
+		Name:         "skip-injections",
+		ShortName:    "",
+		EnvVarName:   "KBC_BUILD_SKIP_INJECTIONS",
+		TypeKind:     reflect.Bool,
+		DefaultValue: "false",
+		Usage:        "Do not inject anything into /usr/share/buildinfo/.",
+	},
 }
 
 type BuildParams struct {
@@ -194,6 +204,7 @@ type BuildParams struct {
 	QuayImageExpiresAfter   string   `paramName:"quay-image-expires-after"`
 	AddLegacyLabels         bool     `paramName:"add-legacy-labels"`
 	ContainerfileJsonOutput string   `paramName:"containerfile-json-output"`
+	SkipInjections          bool     `paramName:"skip-injections"`
 	ExtraArgs               []string // Additional arguments to pass to buildah build
 }
 
@@ -213,9 +224,16 @@ type Build struct {
 	ResultsWriter common.ResultsWriterInterface
 
 	containerfilePath string
-	buildahSecrets    []cliWrappers.BuildahSecret
-	mergedLabels      []string
-	mergedAnnotations []string
+
+	// pre-computed buildah arguments
+	buildahSecrets        []cliWrappers.BuildahSecret
+	mergedLabels          []string
+	mergedAnnotations     []string
+	buildinfoBuildContext *cliWrappers.BuildahBuildContext
+
+	// temporary workdir and related paths
+	tempWorkdir           string
+	containerfileCopyPath string
 }
 
 func NewBuild(cmd *cobra.Command, extraArgs []string) (*Build, error) {
@@ -238,6 +256,14 @@ func NewBuild(cmd *cobra.Command, extraArgs []string) (*Build, error) {
 	return build, nil
 }
 
+func (c *Build) cleanup() {
+	if c.tempWorkdir != "" {
+		if err := os.RemoveAll(c.tempWorkdir); err != nil {
+			l.Logger.Warnf("Failed to clean up temporary workdir %s: %s", c.tempWorkdir, err)
+		}
+	}
+}
+
 func (c *Build) initCliWrappers() error {
 	executor := cliWrappers.NewCliExecutor()
 
@@ -249,9 +275,52 @@ func (c *Build) initCliWrappers() error {
 	return nil
 }
 
+func (c *Build) ensureTempWorkdirExists() error {
+	if c.tempWorkdir == "" {
+		tempWorkdir, err := os.MkdirTemp("", "kbc-image-build-")
+		if err != nil {
+			return fmt.Errorf("creating temporary workdir: %w", err)
+		}
+		c.tempWorkdir = tempWorkdir
+	}
+
+	return nil
+}
+
+func (c *Build) copyToTempWorkdir(filePath string) (copyPath string, err error) {
+	if err := c.ensureTempWorkdirExists(); err != nil {
+		return "", err
+	}
+
+	infile, err := os.Open(filePath)
+	if err != nil {
+		return "", err
+	}
+	defer infile.Close()
+
+	outfile, err := os.CreateTemp(c.tempWorkdir, filepath.Base(filePath)+"-*")
+	if err != nil {
+		return "", err
+	}
+	// Failing to close the outfile could mean that it's not fully written,
+	// so handle the Close() errors rather than using defer.
+
+	_, err = io.Copy(outfile, infile)
+	if err != nil {
+		// we already have an error and want to return that one
+		_ = outfile.Close()
+		return "", err
+	}
+
+	err = outfile.Close()
+	return outfile.Name(), err
+}
+
 // Run executes the command logic.
 func (c *Build) Run() error {
 	c.logParams()
+
+	defer c.cleanup()
 
 	if err := c.validateParams(); err != nil {
 		return err
@@ -272,6 +341,12 @@ func (c *Build) Run() error {
 
 	if err := c.setSecretArgs(); err != nil {
 		return err
+	}
+
+	if !c.Params.SkipInjections {
+		if err := c.injectBuildinfo(containerfile, c.mergedLabels); err != nil {
+			return fmt.Errorf("injecting buildinfo metadata: %w", err)
+		}
 	}
 
 	if err := c.buildImage(); err != nil {
@@ -358,6 +433,9 @@ func (c *Build) logParams() {
 	}
 	if c.Params.ContainerfileJsonOutput != "" {
 		l.Logger.Infof("[param] ContainerfileJsonOutput: %s", c.Params.ContainerfileJsonOutput)
+	}
+	if c.Params.SkipInjections {
+		l.Logger.Infof("[param] SkipInjections: %t", c.Params.SkipInjections)
 	}
 	if len(c.Params.ExtraArgs) > 0 {
 		l.Logger.Infof("[param] ExtraArgs: %v", c.Params.ExtraArgs)
@@ -758,6 +836,227 @@ func goArchToArchitectureLabel(goarch string) string {
 	}
 }
 
+// Injects metadata into the image at /usr/share/buildinfo.
+//
+// Injected files:
+// - labels.json: contains the labels of the resulting image, needed for the Clair scanning tool
+func (c *Build) injectBuildinfo(df *dockerfile.Dockerfile, userLabels []string) error {
+	// Create buildinfo directory in the temporary workdir and add it as a --build-context
+	buildinfoDir, err := c.createBuildinfoDir()
+	if err != nil {
+		return fmt.Errorf("creating buildinfo dir: %w", err)
+	}
+	c.buildinfoBuildContext = &cliWrappers.BuildahBuildContext{Name: ".konflux-buildinfo", Location: buildinfoDir}
+
+	// Create labels.json in buildinfo dir
+	labels, err := c.determineFinalLabels(df, userLabels)
+	if err != nil {
+		return fmt.Errorf("determining labels for labels.json: %w", err)
+	}
+	if err := writeBuildinfoJSON(buildinfoDir, labels, "labels.json"); err != nil {
+		return fmt.Errorf("writing labels.json to buildinfo dir: %w", err)
+	}
+
+	// Copy containerfile and modify the copy
+	containerfileCopy, err := c.copyToTempWorkdir(c.containerfilePath)
+	if err != nil {
+		return fmt.Errorf("creating containerfile copy: %w", err)
+	}
+	l.Logger.Debugf("Copied containerfile to %s", containerfileCopy)
+	c.containerfileCopyPath = containerfileCopy
+
+	appendLines := []string{"COPY --from=.konflux-buildinfo . /usr/share/buildinfo/"}
+	for _, line := range appendLines {
+		l.Logger.Debugf("Appending to containerfile: %s", line)
+	}
+	// prepend a newline in case the input containerfile doesn't end with one
+	appendContent := "\n" + strings.Join(appendLines, "\n") + "\n"
+
+	if err := appendToFile(containerfileCopy, appendContent); err != nil {
+		return fmt.Errorf("writing to containerfile copy: %w", err)
+	}
+
+	return nil
+}
+
+func (c *Build) createBuildinfoDir() (string, error) {
+	if err := c.ensureTempWorkdirExists(); err != nil {
+		return "", err
+	}
+
+	buildinfoDir := filepath.Join(c.tempWorkdir, "buildinfo")
+	if err := os.Mkdir(buildinfoDir, 0755); err != nil {
+		return "", err
+	}
+
+	return buildinfoDir, nil
+}
+
+func writeBuildinfoJSON(buildinfoDir string, value any, filename string) error {
+	// Note: json.MarshalIndent sorts map keys, so the output is deterministic.
+	// This is crucial for reproducibility.
+	jsonContent, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling to JSON: %w", err)
+	}
+
+	filePath := filepath.Join(buildinfoDir, filename)
+	// For backwards compatibility, buildinfo files should be readable to all
+	if err := os.WriteFile(filePath, append(jsonContent, '\n'), 0644); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func appendToFile(filePath, content string) error {
+	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_APPEND, 0)
+	if err != nil {
+		return err
+	}
+	if _, err := file.WriteString(content); err != nil {
+		// we already have an error and want to return that one
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+func (c *Build) determineFinalLabels(df *dockerfile.Dockerfile, userLabels []string) (map[string]string, error) {
+	labels := make(map[string]string)
+
+	baseImage, containerfileLabels := processUntilBaseStage(df)
+
+	// Base image labels
+	if inspectableRef, ok := getInspectableRef(baseImage); ok {
+		l.Logger.Debugf("Pulling base image %s to read labels...", baseImage)
+		err := c.CliWrappers.BuildahCli.Pull(&cliWrappers.BuildahPullArgs{Image: baseImage})
+		if err != nil {
+			return nil, fmt.Errorf("pulling base image %s: %w", baseImage, err)
+		}
+
+		info, err := c.CliWrappers.BuildahCli.InspectImage(inspectableRef)
+		if err != nil {
+			return nil, fmt.Errorf("inspecting base image %s: %w", inspectableRef, err)
+		}
+
+		maps.Copy(labels, info.OCIv1.Config.Labels)
+	} else if baseImage != "" {
+		l.Logger.Warnf("Injecting labels.json: ignoring base image labels due to unsupported transport: %s", baseImage)
+	}
+
+	// Containerfile labels
+	maps.Copy(labels, containerfileLabels)
+
+	// User-provided labels
+	for _, label := range userLabels {
+		key, value, _ := strings.Cut(label, "=")
+		labels[key] = value
+	}
+
+	// Automatic buildah version label (highest precedence)
+	// Only injected if --source-date-epoch (or --timestamp, which we do not expose) are not used.
+	// See https://www.mankier.com/1/buildah-build#--identity-label.
+	if c.Params.SourceDateEpoch == "" {
+		versionInfo, err := c.CliWrappers.BuildahCli.Version()
+		if err != nil {
+			return nil, fmt.Errorf("getting buildah version: %w", err)
+		}
+		labels["io.buildah.version"] = versionInfo.Version
+	}
+
+	return labels, nil
+}
+
+// Resolves the base stage of the final stage by following FROM references
+// through intermediate stages. Collects LABELs from each stage in the chain.
+// Returns the base image for the base stage and the collected labels.
+func processUntilBaseStage(df *dockerfile.Dockerfile) (string, map[string]string) {
+	if df == nil || len(df.Stages) == 0 {
+		return "", nil
+	}
+
+	stage := df.Stages[len(df.Stages)-1]
+	stageChain := []*dockerfile.Stage{}
+
+	for stage != nil {
+		stageChain = append(stageChain, stage)
+		if stage.From.Stage != nil {
+			stage = df.Stages[stage.From.Stage.Index]
+		} else {
+			stage = nil
+		}
+	}
+
+	// We need to process labels starting from the base stage through to the final stage
+	slices.Reverse(stageChain)
+
+	var baseImage string
+	baseStage := stageChain[0]
+	if !baseStage.From.Scratch && baseStage.From.Image != nil {
+		baseImage = *baseStage.From.Image
+	}
+
+	labels := make(map[string]string)
+	for _, stage := range stageChain {
+		for _, cmd := range stage.Commands {
+			if labelCmd, ok := cmd.Command.(*instructions.LabelCommand); ok {
+				for _, kv := range labelCmd.Labels {
+					labels[kv.Key] = kv.Value
+				}
+			}
+		}
+	}
+
+	return baseImage, labels
+}
+
+// Determine if the base image is worth inspecting to find its labels.
+// If yes, return the "inspectable reference" of the pulled image
+// (buildah inspect does not support transports).
+//
+// A base image in the Containerfile can use any of the container transports [1].
+// We only care about container images from a registry, i.e. those that do not specify
+// a transport or use the docker:// transport. The containers-storage: transport is also
+// trivially supportable (the image is already present in the local storage).
+//
+// Most of the others are unsupportable (they can reference a local path, which can get
+// created dynamically during the build) or just aren't a real use case.
+//
+// [1]: https://man.archlinux.org/man/containers-transports.5.en
+func getInspectableRef(baseImageRef string) (string, bool) {
+	if baseImageRef == "" {
+		return "", false
+	}
+
+	supportedTransports := []string{
+		"docker://",
+		"containers-storage:",
+	}
+	for _, transport := range supportedTransports {
+		if imageRef, ok := strings.CutPrefix(baseImageRef, transport); ok {
+			return imageRef, true
+		}
+	}
+
+	unsupportedTransports := []string{
+		"dir:",
+		"docker-archive:",
+		"docker-daemon:",
+		"oci:",
+		"oci-archive:",
+		"sif:",
+	}
+	for _, transport := range unsupportedTransports {
+		if strings.HasPrefix(baseImageRef, transport) {
+			return "", false
+		}
+	}
+
+	// No transport protocol in the image ref
+	return baseImageRef, true
+}
+
 func (c *Build) buildImage() error {
 	l.Logger.Info("Building container image...")
 
@@ -770,8 +1069,13 @@ func (c *Build) buildImage() error {
 	}
 	defer os.Chdir(originalCwd)
 
+	containerfilePath := c.containerfilePath
+	if c.containerfileCopyPath != "" {
+		containerfilePath = c.containerfileCopyPath
+	}
+
 	buildArgs := &cliWrappers.BuildahBuildArgs{
-		Containerfile:    c.containerfilePath,
+		Containerfile:    containerfilePath,
 		ContextDir:       c.Params.Context,
 		OutputRef:        c.Params.OutputRef,
 		Secrets:          c.buildahSecrets,
@@ -788,6 +1092,9 @@ func (c *Build) buildImage() error {
 		buildArgs.Volumes = []cliWrappers.BuildahVolume{
 			{HostDir: c.Params.Context, ContainerDir: c.Params.WorkdirMount, Options: "z"},
 		}
+	}
+	if c.buildinfoBuildContext != nil {
+		buildArgs.BuildContexts = []cliWrappers.BuildahBuildContext{*c.buildinfoBuildContext}
 	}
 
 	if err := buildArgs.MakePathsAbsolute(originalCwd); err != nil {
