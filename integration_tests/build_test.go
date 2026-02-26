@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	BuildImage = "quay.io/konflux-ci/buildah-task:latest@sha256:5c5eb4117983b324f932f144aa2c2df7ed508174928a423d8551c4e11f30fbd9"
+	BuildImage = "quay.io/konflux-ci/buildah-task:latest@sha256:4c470b5a153c4acd14bf4f8731b5e36c61d7faafe09c2bf376bb81ce84aa5709"
 	// Tests that need a real base image should try to use the same one when possible
 	// (to reduce the time spent pulling base images)
 	baseImage = "registry.access.redhat.com/ubi10/ubi-micro:10.1@sha256:2946fa1b951addbcd548ef59193dc0af9b3e9fedb0287b4ddb6e697b06581622"
@@ -56,10 +56,10 @@ func RunBuild(buildParams BuildParams, imageRegistry ImageRegistry) error {
 	// doesn't work reliably with host volume mounts through the VM
 	if runtime.GOOS != "darwin" {
 		containerStoragePath, err := createContainerStorageDir()
+		defer removeContainerStorageDir(containerStoragePath)
 		if err != nil {
 			return err
 		}
-		defer removeContainerStorageDir(containerStoragePath)
 		opts = append(opts, WithVolumeWithOptions(containerStoragePath, "/var/lib/containers", "z"))
 	}
 
@@ -97,6 +97,12 @@ func createContainerStorageDir() (string, error) {
 		return "", err
 	}
 
+	// Tests may run the BuildImage as a non-root user. Allow this user to write to the
+	// container storage dir (by allowing everyone to write).
+	if err := os.Chmod(tmpDir, 0777); err != nil {
+		return tmpDir, err
+	}
+
 	return tmpDir, nil
 }
 
@@ -104,6 +110,10 @@ func createContainerStorageDir() (string, error) {
 // and the parent .test-containers-storage directory if empty.
 // The cleanup is best-effort and ignores errors.
 func removeContainerStorageDir(containerStoragePath string) {
+	if containerStoragePath == "" {
+		return
+	}
+
 	// 1. 'chmod -R' to ensure write permissions (container storage often includes read-only files)
 	_ = filepath.WalkDir(containerStoragePath, func(path string, d fs.DirEntry, err error) error {
 		// Ignore errors, try to chmod everything if possible
@@ -346,14 +356,14 @@ func formatAsKeyValuePairs(m map[string]string) []string {
 func TestBuild(t *testing.T) {
 	SetupGomega(t)
 
-	commonOpts := []ContainerOption{}
+	commonOpts := []ContainerOption{WithUser("taskuser")}
 	// On macOS, containers run in a Linux VM; overlay storage driver
 	// doesn't work reliably with host volume mounts through the VM
 	if runtime.GOOS != "darwin" {
 		containerStoragePath, err := createContainerStorageDir()
-		Expect(err).ToNot(HaveOccurred())
 		t.Cleanup(func() { removeContainerStorageDir(containerStoragePath) })
-		commonOpts = append(commonOpts, WithVolumeWithOptions(containerStoragePath, "/var/lib/containers", "z"))
+		Expect(err).ToNot(HaveOccurred())
+		commonOpts = append(commonOpts, WithVolumeWithOptions(containerStoragePath, "/home/taskuser/.local/share/containers", "z"))
 	}
 
 	setupBuildContainerWithCleanup := func(
