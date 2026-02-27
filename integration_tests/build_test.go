@@ -51,6 +51,7 @@ type BuildParams struct {
 	// Defaults to true in the CLI, need a way to distinguish between explicitly false and unset
 	InheritLabels              *bool
 	IncludeLegacyBuildinfoPath bool
+	Target                     string
 	ExtraArgs                  []string
 }
 
@@ -236,6 +237,9 @@ func runBuildWithOutput(container *TestRunnerContainer, buildParams BuildParams)
 	}
 	if buildParams.InheritLabels != nil {
 		args = append(args, fmt.Sprintf("--inherit-labels=%t", *buildParams.InheritLabels))
+	}
+	if buildParams.Target != "" {
+		args = append(args, "--target", buildParams.Target)
 	}
 	// Add separator and extra args if provided
 	if len(buildParams.ExtraArgs) > 0 {
@@ -1752,6 +1756,40 @@ LABEL containerfile.label=containerfile-label
 				))
 			})
 
+			t.Run("UnsupportedWithTarget", func(t *testing.T) {
+				contextDir := setupTestContext(t)
+
+				writeContainerfile(contextDir, `
+FROM scratch AS stage1
+
+LABEL stage1.label=label-from-stage1
+
+FROM stage1
+
+LABEL final.stage.label=label-from-final-stage
+`)
+
+				outputRef := "localhost/test-injecting-buildinfo-unsupported-with-target:" + GenerateUniqueTag(t)
+
+				buildParams := BuildParams{
+					Context:   contextDir,
+					OutputRef: outputRef,
+					Push:      false,
+					Target:    "stage1",
+				}
+
+				container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+				err := runBuild(container, buildParams)
+				Expect(err).ToNot(HaveOccurred())
+
+				exists := fileExistsInOutputImage(container, outputRef, "/usr/share/buildinfo/labels.json")
+				Expect(exists).To(BeFalse(), "Should not have injected /usr/share/buildinfo/labels.json")
+
+				exists2 := fileExistsInOutputImage(container, outputRef, "/root/buildinfo/labels.json")
+				Expect(exists2).To(BeFalse(), "Should not have injected /root/buildinfo/labels.json")
+			})
+
 			t.Run("LabelsWithQuotes", func(t *testing.T) {
 				contextDir := setupTestContext(t)
 
@@ -1862,6 +1900,43 @@ LABEL final.stage.label=label-from-final-stage
 			"cli.label=label-from-CLI",
 			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
 			// And nothing else (hence ConsistOf())
+		))
+	})
+
+	t.Run("WithTarget", func(t *testing.T) {
+		contextDir := setupTestContext(t)
+
+		writeContainerfile(contextDir, `
+FROM scratch AS stage1
+
+LABEL stage1.label=label-from-stage1
+LABEL common.label=common-stage1
+
+FROM stage1
+
+LABEL stage2.label=label-from-stage2
+LABEL common.label=common-stage2
+`)
+
+		outputRef := "localhost/test-with-target:" + GenerateUniqueTag(t)
+
+		buildParams := BuildParams{
+			Context:   contextDir,
+			OutputRef: outputRef,
+			Push:      false,
+			Target:    "stage1",
+		}
+
+		container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+		err := runBuild(container, buildParams)
+		Expect(err).ToNot(HaveOccurred())
+
+		imageMeta := getImageMeta(container, outputRef)
+		Expect(imageMeta.labels).To(SatisfyAll(
+			HaveKeyWithValue("stage1.label", "label-from-stage1"),
+			HaveKeyWithValue("common.label", "common-stage1"),
+			Not(HaveKey("stage2.label")),
 		))
 	})
 }

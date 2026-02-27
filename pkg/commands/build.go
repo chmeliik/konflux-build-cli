@@ -197,6 +197,13 @@ var BuildParamsConfig = map[string]common.Parameter{
 		DefaultValue: "true",
 		Usage:        "Inherit labels from the base image or base stages.",
 	},
+	"target": {
+		Name:       "target",
+		ShortName:  "",
+		EnvVarName: "KBC_BUILD_TARGET",
+		TypeKind:   reflect.String,
+		Usage:      "Target stage in the Containerfile to build. By default, the target stage is the last stage.",
+	},
 }
 
 type BuildParams struct {
@@ -223,6 +230,7 @@ type BuildParams struct {
 	SkipInjections             bool     `paramName:"skip-injections"`
 	InheritLabels              bool     `paramName:"inherit-labels"`
 	IncludeLegacyBuildinfoPath bool     `paramName:"include-legacy-buildinfo-path"`
+	Target                     string   `paramName:"target"`
 	ExtraArgs                  []string // Additional arguments to pass to buildah build
 }
 
@@ -362,7 +370,9 @@ func (c *Build) Run() error {
 	}
 
 	if !c.Params.SkipInjections {
-		if err := c.injectBuildinfo(containerfile, c.mergedLabels); err != nil {
+		if c.Params.Target != "" {
+			l.Logger.Warnf("Injecting buildinfo is not supported with --target. Skipping.")
+		} else if err := c.injectBuildinfo(containerfile, c.mergedLabels); err != nil {
 			return fmt.Errorf("injecting buildinfo metadata: %w", err)
 		}
 	}
@@ -1134,6 +1144,7 @@ func (c *Build) buildImage() error {
 		RewriteTimestamp: c.Params.RewriteTimestamp,
 		ExtraArgs:        c.Params.ExtraArgs,
 		InheritLabels:    &c.Params.InheritLabels,
+		Target:           c.Params.Target,
 	}
 	if c.Params.WorkdirMount != "" {
 		buildArgs.Volumes = []cliWrappers.BuildahVolume{

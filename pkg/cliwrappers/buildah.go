@@ -59,6 +59,7 @@ type BuildahBuildArgs struct {
 	RewriteTimestamp bool
 	// Defaults to true in the CLI, need a way to distinguish between explicitly false and unset
 	InheritLabels *bool
+	Target        string
 	ExtraArgs     []string
 }
 
@@ -213,6 +214,10 @@ func (b *BuildahCli) Build(args *BuildahBuildArgs) error {
 
 	if args.InheritLabels != nil {
 		buildahArgs = append(buildahArgs, fmt.Sprintf("--inherit-labels=%t", *args.InheritLabels))
+	}
+
+	if args.Target != "" {
+		buildahArgs = append(buildahArgs, "--target="+args.Target)
 	}
 
 	// Append extra arguments before the context directory
