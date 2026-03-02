@@ -43,6 +43,18 @@ LABEL summary="Konflux Build CLI"
 LABEL name="konflux-build-cli"
 LABEL com.redhat.component="konflux-build-cli"
 
+ARG BUILDARG_FROM_PARAM_1
+ARG BUILDARG_FROM_PARAM_2
+ARG BUILDARG_FROM_FILE_1
+ARG BUILDARG_FROM_FILE_2
+
+LABEL arg.from.param.1=$BUILDARG_FROM_PARAM_1
+LABEL arg.from.param.2=$BUILDARG_FROM_PARAM_2
+LABEL arg.from.file.1=$BUILDARG_FROM_FILE_1
+LABEL arg.from.file.2=$BUILDARG_FROM_FILE_2
+LABEL env.from.param.1=$ENV_FROM_PARAM_1
+LABEL env.from.param.2=$ENV_FROM_PARAM_2
+
 RUN --mount=type=secret,id=pipelines-as-code-secret/password \
     stat /run/secrets/pipelines-as-code-secret/password
 
