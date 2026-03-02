@@ -274,15 +274,15 @@ spec:
       - name: SOURCE_DATE_EPOCH
         value: "882921600"
       - name: REWRITE_TIMESTAMP
-        value: "true"
+        value: "false"
       - name: INHERIT_BASE_IMAGE_LABELS
-        value: "true"
+        value: "false"
       - name: "TARGET_STAGE"
         value: ""  # final stage
       - name: SKIP_INJECTIONS
         value: "false"
       - name: ICM_KEEP_COMPAT_LOCATION
-        value: "true"
+        value: "false"
       runAfter:
       - prefetch-dependencies
       taskRef:
