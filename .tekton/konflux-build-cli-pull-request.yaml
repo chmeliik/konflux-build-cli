@@ -271,16 +271,16 @@ spec:
         value:
           - ENV_FROM_PARAM_1=env-foo
           - ENV_FROM_PARAM_2=env-bar
-      - name: SOURCE_DATE_EPOCH
+      - name: BUILD_TIMESTAMP
         value: "882921600"
       - name: REWRITE_TIMESTAMP
-        value: "false"
+        value: "true"
       - name: INHERIT_BASE_IMAGE_LABELS
         value: "false"
       - name: "TARGET_STAGE"
         value: ""  # final stage
       - name: SKIP_INJECTIONS
-        value: "false"
+        value: "true"
       - name: ICM_KEEP_COMPAT_LOCATION
         value: "false"
       runAfter:
