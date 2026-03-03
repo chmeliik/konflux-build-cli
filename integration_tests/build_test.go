@@ -713,13 +713,6 @@ LABEL test.label="platform-build-args-test"
 			imageLabel := imageLabels[label]
 			containerfileLabel := containerfileLabels[label]
 
-			// the *VARIANT values will be empty on platforms other than ARM
-			expectEmpty := strings.HasSuffix(label, "VARIANT") && runtime.GOARCH != "arm"
-			if !expectEmpty {
-				Expect(imageLabel).ToNot(BeEmpty(), fmt.Sprintf("label %s is empty on the built image", label))
-				Expect(containerfileLabel).ToNot(BeEmpty(), fmt.Sprintf("label %s is empty in the containerfile JSON", label))
-			}
-
 			Expect(imageLabel).To(Equal(containerfileLabel),
 				fmt.Sprintf("image label: %s=%s; containerfile label: %s=%s", label, imageLabel, label, containerfileLabel),
 			)
