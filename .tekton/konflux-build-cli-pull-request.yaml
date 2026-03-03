@@ -278,9 +278,9 @@ spec:
       - name: INHERIT_BASE_IMAGE_LABELS
         value: "false"
       - name: "TARGET_STAGE"
-        value: ""  # final stage
+        value: "builder"
       - name: SKIP_INJECTIONS
-        value: "true"
+        value: "false"
       - name: ICM_KEEP_COMPAT_LOCATION
         value: "false"
       runAfter:
