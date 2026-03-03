@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/onsi/gomega"
 
@@ -34,6 +35,15 @@ type BuildParams struct {
 	BuildArgs               []string
 	BuildArgsFile           string
 	Envs                    []string
+	Labels                  []string
+	Annotations             []string
+	ImageSource             string
+	ImageRevision           string
+	LegacyBuildTimestamp    string
+	SourceDateEpoch         string
+	RewriteTimestamp        bool
+	QuayImageExpiresAfter   string
+	AddLegacyLabels         bool
 	ContainerfileJsonOutput string
 	ExtraArgs               []string
 }
@@ -163,6 +173,35 @@ func runBuildWithOutput(container *TestRunnerContainer, buildParams BuildParams)
 		args = append(args, "--envs")
 		args = append(args, buildParams.Envs...)
 	}
+	if len(buildParams.Labels) > 0 {
+		args = append(args, "--labels")
+		args = append(args, buildParams.Labels...)
+	}
+	if len(buildParams.Annotations) > 0 {
+		args = append(args, "--annotations")
+		args = append(args, buildParams.Annotations...)
+	}
+	if buildParams.ImageSource != "" {
+		args = append(args, "--image-source", buildParams.ImageSource)
+	}
+	if buildParams.ImageRevision != "" {
+		args = append(args, "--image-revision", buildParams.ImageRevision)
+	}
+	if buildParams.LegacyBuildTimestamp != "" {
+		args = append(args, "--legacy-build-timestamp", buildParams.LegacyBuildTimestamp)
+	}
+	if buildParams.SourceDateEpoch != "" {
+		args = append(args, "--source-date-epoch", buildParams.SourceDateEpoch)
+	}
+	if buildParams.RewriteTimestamp {
+		args = append(args, "--rewrite-timestamp")
+	}
+	if buildParams.QuayImageExpiresAfter != "" {
+		args = append(args, "--quay-image-expires-after", buildParams.QuayImageExpiresAfter)
+	}
+	if buildParams.AddLegacyLabels {
+		args = append(args, "--add-legacy-labels")
+	}
 	if buildParams.ContainerfileJsonOutput != "" {
 		args = append(args, "--containerfile-json-output", buildParams.ContainerfileJsonOutput)
 	}
@@ -207,8 +246,11 @@ func writeContainerfile(contextDir, content string) {
 }
 
 type containerImageMeta struct {
-	labels map[string]string
-	envs   map[string]string
+	digest      string
+	created     string
+	labels      map[string]string
+	annotations map[string]string
+	envs        map[string]string
 }
 
 func getImageMeta(container *TestRunnerContainer, imageRef string) containerImageMeta {
@@ -217,11 +259,16 @@ func getImageMeta(container *TestRunnerContainer, imageRef string) containerImag
 
 	var inspect struct {
 		OCIv1 struct {
-			Config struct {
+			Created string `json:"created"`
+			Config  struct {
 				Labels map[string]string
 				Env    []string
 			} `json:"config"`
 		}
+		ImageAnnotations map[string]string
+		// This field has the same value as the output of
+		// skopeo inspect --format '{{.Digest}}' containers-storage:<imageRef>
+		FromImageDigest string
 	}
 
 	err = json.Unmarshal([]byte(stdout), &inspect)
@@ -233,7 +280,13 @@ func getImageMeta(container *TestRunnerContainer, imageRef string) containerImag
 		envs[key] = value
 	}
 
-	return containerImageMeta{labels: inspect.OCIv1.Config.Labels, envs: envs}
+	return containerImageMeta{
+		digest:      inspect.FromImageDigest,
+		created:     inspect.OCIv1.Created,
+		labels:      inspect.OCIv1.Config.Labels,
+		annotations: inspect.ImageAnnotations,
+		envs:        envs,
+	}
 }
 
 func getContainerfileMeta(container *TestRunnerContainer, containerfileJsonPath string) containerImageMeta {
@@ -744,10 +797,10 @@ LABEL test.label="envs-test"
 		containerfileJsonPath := "/workspace/parsed-containerfile.json"
 
 		buildParams := BuildParams{
-			Context:                 contextDir,
-			OutputRef:               outputRef,
-			Push:                    false,
-			Envs:                    []string{
+			Context:   contextDir,
+			OutputRef: outputRef,
+			Push:      false,
+			Envs: []string{
 				"FOO=foo-value",
 				"BAR=bar-value",
 				// Corner cases to verify that dockerfile-json and buildah handle them the same way
@@ -796,5 +849,297 @@ LABEL test.label="envs-test"
 
 		containerfileLabels := formatAsKeyValuePairs(containerfileMeta.labels)
 		Expect(containerfileLabels).To(ContainElements(expectedLabels))
+	})
+
+	t.Run("WithLabelsAndAnnotations", func(t *testing.T) {
+		contextDir := setupTestContext(t)
+
+		writeContainerfile(contextDir, `FROM scratch`)
+
+		outputRef := "localhost/test-image-labels-annotations:" + GenerateUniqueTag(t)
+
+		buildParams := BuildParams{
+			Context:   contextDir,
+			OutputRef: outputRef,
+			Push:      false,
+			Labels: []string{
+				"custom.label1=value1",
+				"custom.label2=value2",
+			},
+			Annotations: []string{
+				"org.opencontainers.image.title=King Arthur",
+				"org.opencontainers.image.description=Elected by farcical aquatic ceremony.",
+			},
+			ImageSource:           "https://github.com/konflux-ci/test",
+			ImageRevision:         "abc123",
+			LegacyBuildTimestamp:  "1767225600", // 2026-01-01
+			QuayImageExpiresAfter: "2w",
+		}
+
+		container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+		err := runBuild(container, buildParams)
+		Expect(err).ToNot(HaveOccurred())
+
+		imageMeta := getImageMeta(container, outputRef)
+
+		imageLabels := formatAsKeyValuePairs(imageMeta.labels)
+		Expect(imageLabels).To(ContainElements(
+			"custom.label1=value1",
+			"custom.label2=value2",
+			// default labels (with user-supplied values)
+			"org.opencontainers.image.source=https://github.com/konflux-ci/test",
+			"org.opencontainers.image.revision=abc123",
+			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
+			"quay.expires-after=2w",
+		))
+
+		imageAnnotations := formatAsKeyValuePairs(imageMeta.annotations)
+		Expect(imageAnnotations).To(ContainElements(
+			"org.opencontainers.image.title=King Arthur",
+			"org.opencontainers.image.description=Elected by farcical aquatic ceremony.",
+			// default annotations (with user-supplied values)
+			"org.opencontainers.image.source=https://github.com/konflux-ci/test",
+			"org.opencontainers.image.revision=abc123",
+			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
+		))
+	})
+
+	t.Run("OverrideDefaultLabelsAndAnnotations", func(t *testing.T) {
+		contextDir := setupTestContext(t)
+
+		writeContainerfile(contextDir, `FROM scratch`)
+
+		outputRef := "localhost/test-override-defaults:" + GenerateUniqueTag(t)
+
+		buildParams := BuildParams{
+			Context:       contextDir,
+			OutputRef:     outputRef,
+			Push:          false,
+			ImageSource:   "https://default.com",
+			ImageRevision: "default",
+			Labels: []string{
+				// override source, but not revision
+				"org.opencontainers.image.source=https://user-override.com",
+			},
+			Annotations: []string{
+				// override revision, but not source
+				"org.opencontainers.image.revision=override",
+			},
+		}
+
+		container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+		err := runBuild(container, buildParams)
+		Expect(err).ToNot(HaveOccurred())
+
+		imageMeta := getImageMeta(container, outputRef)
+
+		imageLabels := formatAsKeyValuePairs(imageMeta.labels)
+		Expect(imageLabels).To(ContainElements(
+			"org.opencontainers.image.source=https://user-override.com",
+			"org.opencontainers.image.revision=default",
+		))
+
+		imageAnnotations := formatAsKeyValuePairs(imageMeta.annotations)
+		Expect(imageAnnotations).To(ContainElements(
+			"org.opencontainers.image.source=https://default.com",
+			"org.opencontainers.image.revision=override",
+		))
+	})
+
+	t.Run("WithLegacyLabels", func(t *testing.T) {
+		contextDir := setupTestContext(t)
+
+		writeContainerfile(contextDir, `FROM scratch`)
+
+		outputRef := "localhost/test-legacy-labels:" + GenerateUniqueTag(t)
+
+		buildParams := BuildParams{
+			Context:              contextDir,
+			OutputRef:            outputRef,
+			Push:                 false,
+			ImageSource:          "https://github.com/konflux-ci/test",
+			ImageRevision:        "abc123",
+			LegacyBuildTimestamp: "1767225600", // 2026-01-01
+			AddLegacyLabels:      true,
+		}
+
+		container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+		err := runBuild(container, buildParams)
+		Expect(err).ToNot(HaveOccurred())
+
+		imageMeta := getImageMeta(container, outputRef)
+
+		// Get the expected architecture from 'uname -m' in the container
+		stdout, _, err := container.ExecuteCommandWithOutput("uname", "-m")
+		Expect(err).ToNot(HaveOccurred())
+		expectedArch := strings.TrimSpace(stdout)
+
+		imageLabels := formatAsKeyValuePairs(imageMeta.labels)
+
+		Expect(imageMeta.labels).To(HaveKey("architecture"))
+		Expect(imageMeta.labels["architecture"]).To(Equal(expectedArch),
+			"architecture label should match uname -m output")
+
+		Expect(imageLabels).To(ContainElements(
+			"org.opencontainers.image.source=https://github.com/konflux-ci/test",
+			"vcs-url=https://github.com/konflux-ci/test",
+			"org.opencontainers.image.revision=abc123",
+			"vcs-ref=abc123",
+			"vcs-type=git",
+			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
+			"build-date=2026-01-01T00:00:00Z",
+		))
+
+		// Annotations should not include legacy labels
+		imageAnnotations := formatAsKeyValuePairs(imageMeta.annotations)
+		Expect(imageMeta.annotations).ToNot(HaveKey("architecture"))
+		Expect(imageMeta.annotations).ToNot(HaveKey("vcs-url"))
+		Expect(imageMeta.annotations).ToNot(HaveKey("vcs-ref"))
+		Expect(imageMeta.annotations).ToNot(HaveKey("vcs-type"))
+		Expect(imageMeta.annotations).ToNot(HaveKey("build-date"))
+		Expect(imageAnnotations).To(ContainElements(
+			"org.opencontainers.image.source=https://github.com/konflux-ci/test",
+			"org.opencontainers.image.revision=abc123",
+			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
+		))
+	})
+
+	t.Run("SourceDateEpoch", func(t *testing.T) {
+		contextDir := setupTestContext(t)
+
+		writeContainerfile(contextDir, `
+FROM scratch
+
+ARG SOURCE_DATE_EPOCH
+
+LABEL source-date-epoch=$SOURCE_DATE_EPOCH
+`)
+
+		sourceDateEpoch := "1767225600" // 2026-01-01
+
+		checkSourceDateEpochEffects := func(imageMeta containerImageMeta) {
+			imageAnnotations := formatAsKeyValuePairs(imageMeta.annotations)
+			imageLabels := formatAsKeyValuePairs(imageMeta.labels)
+
+			// Should set the 'created' attribute
+			Expect(imageMeta.created).To(Equal("2026-01-01T00:00:00Z"))
+			Expect(imageAnnotations).To(ContainElements(
+				// Should set the org.opencontainers.image.created annotation
+				"org.opencontainers.image.created=2026-01-01T00:00:00Z",
+			))
+			Expect(imageLabels).To(ContainElements(
+				// Should set the org.opencontainers.image.created label
+				"org.opencontainers.image.created=2026-01-01T00:00:00Z",
+				// With --add-legacy-labels, should also set the build-date label
+				"build-date=2026-01-01T00:00:00Z",
+				// Should set the SOURCE_DATE_EPOCH build argument
+				"source-date-epoch=1767225600",
+			))
+		}
+
+		t.Run("FromCLI", func(t *testing.T) {
+			outputRef := "localhost/test-source-date-epoch-from-cli:" + GenerateUniqueTag(t)
+
+			buildParams := BuildParams{
+				Context:         contextDir,
+				OutputRef:       outputRef,
+				Push:            false,
+				SourceDateEpoch: sourceDateEpoch,
+				AddLegacyLabels: true,
+			}
+
+			container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+			err := runBuild(container, buildParams)
+			Expect(err).ToNot(HaveOccurred())
+
+			imageMeta := getImageMeta(container, outputRef)
+			checkSourceDateEpochEffects(imageMeta)
+		})
+
+		// Test the SOURCE_DATE_EPOCH environment variable as well, because unlike other env vars,
+		// it doesn't have the KBC_ prefix and we still want to handle it.
+		t.Run("FromEnv", func(t *testing.T) {
+			outputRef := "localhost/test-source-date-epoch-from-cli:" + GenerateUniqueTag(t)
+
+			buildParams := BuildParams{
+				Context:         contextDir,
+				OutputRef:       outputRef,
+				Push:            false,
+				AddLegacyLabels: true,
+			}
+
+			container := setupBuildContainerWithCleanup(
+				t, buildParams, nil, WithEnv("SOURCE_DATE_EPOCH", sourceDateEpoch),
+			)
+
+			err := runBuild(container, buildParams)
+			Expect(err).ToNot(HaveOccurred())
+
+			imageMeta := getImageMeta(container, outputRef)
+			checkSourceDateEpochEffects(imageMeta)
+		})
+	})
+
+	t.Run("Reproducibility", func(t *testing.T) {
+		buildImage := func() containerImageMeta {
+			contextDir := setupTestContext(t)
+			// The file is newly created for every test build, has a different timestamp every time
+			// and would normally break reproducibility. Try setting RewriteTimestamp to false and
+			// see that imageMeta.digest is different every time.
+			testutil.WriteFileTree(t, contextDir, map[string]string{
+				"hello.txt": "hello there\n",
+			})
+
+			writeContainerfile(contextDir, `
+FROM scratch
+
+COPY hello.txt /hello.txt
+`)
+
+			outputRef := "localhost/test-reproducibility:" + GenerateUniqueTag(t)
+
+			buildParams := BuildParams{
+				Context:   contextDir,
+				OutputRef: outputRef,
+				Push:      false,
+				// Thanks to the combination of --source-date-epoch and --rewrite-timestamp,
+				// the timestamp of /hello.txt inside the built image will be clamped to 2026-01-01
+				SourceDateEpoch:  "1767225600",
+				RewriteTimestamp: true,
+				ExtraArgs: []string{
+					// Ensure the image config will be exactly the same regardles of the host OS/architecture
+					"--platform", "linux/amd64",
+					// We want to build the image twice and verify reproducibility, avoid caching
+					"--no-cache",
+				},
+			}
+
+			container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+			err := runBuild(container, buildParams)
+			Expect(err).ToNot(HaveOccurred())
+
+			imageMeta := getImageMeta(container, outputRef)
+			return imageMeta
+		}
+
+		imageMeta1 := buildImage()
+
+		// Thanks to all time-related metadata being set to 2026-01-01, the build is fully reproducible
+		// and the digest will stay the same every time.
+		Expect(imageMeta1.digest).To(Equal("sha256:e0af303a3dea2d5339af66071540d35043b51889d1b770289405498b87dd9987"))
+		Expect(imageMeta1.created).To(Equal("2026-01-01T00:00:00Z"))
+
+		// Ensure the hello.txt file created for the second test really does get a different timestamp
+		time.Sleep(1 * time.Second)
+
+		// Build from the same inputs (just with different timestamps) twice.
+		// The built image should have the same digest both times.
+		imageMeta2 := buildImage()
+		Expect(imageMeta2.digest).To(Equal(imageMeta1.digest), "Digest unexpectedly changed after rebuild")
 	})
 }

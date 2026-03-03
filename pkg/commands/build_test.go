@@ -4,7 +4,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/konflux-ci/konflux-build-cli/pkg/cliwrappers"
 	"github.com/konflux-ci/konflux-build-cli/testutil"
@@ -70,6 +73,17 @@ func Test_Build_validateParams(t *testing.T) {
 			},
 			errExpected:  true,
 			errSubstring: "is not a directory",
+		},
+		{
+			name: "should fail when when legacy-build-timestamp and source-date-epoch are used together",
+			params: BuildParams{
+				OutputRef:            "quay.io/org/image:tag",
+				Context:              tempDir,
+				LegacyBuildTimestamp: "1",
+				SourceDateEpoch:      "1",
+			},
+			errExpected:  true,
+			errSubstring: "are mutually exclusive",
 		},
 	}
 
@@ -1055,5 +1069,202 @@ func Test_Build_Run(t *testing.T) {
 		// Check that the Run() function restored the cwd on exit
 		restoredDir, _ := os.Getwd()
 		g.Expect(restoredDir).To(Equal(tempDir))
+	})
+}
+
+func Test_goArchToArchitectureLabel(t *testing.T) {
+	g := NewWithT(t)
+
+	tests := []struct {
+		goarch   string
+		expected string
+	}{
+		{"amd64", "x86_64"},
+		{"arm64", "aarch64"},
+		{"ppc64le", "ppc64le"},
+		{"s390x", "s390x"},
+		{"unknown", "unknown"},
+	}
+
+	for _, tc := range tests {
+		result := goArchToArchitectureLabel(tc.goarch)
+		g.Expect(result).To(Equal(tc.expected), "goArchToUname(%s) should return %s", tc.goarch, tc.expected)
+	}
+}
+
+func Test_Build_mergeDefaultLabelsAndAnnotations(t *testing.T) {
+	g := NewWithT(t)
+
+	t.Run("should add default labels and annotations with provided values", func(t *testing.T) {
+		c := &Build{
+			Params: &BuildParams{
+				LegacyBuildTimestamp: "1767225600", // 2026-01-01
+				ImageSource:          "https://github.com/org/repo",
+				ImageRevision:        "abc123",
+			},
+		}
+
+		labels, annotations, err := c.mergeDefaultLabelsAndAnnotations()
+		g.Expect(err).ToNot(HaveOccurred())
+
+		g.Expect(labels).To(Equal([]string{
+			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
+			"org.opencontainers.image.source=https://github.com/org/repo",
+			"org.opencontainers.image.revision=abc123",
+		}))
+		g.Expect(annotations).To(Equal([]string{
+			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
+			"org.opencontainers.image.source=https://github.com/org/repo",
+			"org.opencontainers.image.revision=abc123",
+		}))
+	})
+
+	t.Run("should always add creation time label and annotation", func(t *testing.T) {
+		c := &Build{
+			Params: &BuildParams{},
+		}
+
+		labels, annotations, err := c.mergeDefaultLabelsAndAnnotations()
+		g.Expect(err).ToNot(HaveOccurred())
+
+		g.Expect(labels).To(ConsistOf(
+			MatchRegexp(`^org.opencontainers.image.created=.+Z$`),
+		))
+		g.Expect(annotations).To(Equal(labels))
+
+		imageCreated := labels[0]
+
+		_, rfc3339time, _ := strings.Cut(imageCreated, "=")
+		timestamp, err := time.Parse(time.RFC3339, rfc3339time)
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(timestamp).To(BeTemporally("~", time.Now(), time.Second))
+	})
+
+	t.Run("should prepend defaults to let user-provided values override them", func(t *testing.T) {
+		c := &Build{
+			Params: &BuildParams{
+				LegacyBuildTimestamp: "1767225600", // 2026-01-01
+				ImageSource:          "https://github.com/org/repo",
+				ImageRevision:        "abc123",
+				Labels: []string{
+					"some-label=foo",
+					"org.opencontainers.image.revision=main",
+				},
+				Annotations: []string{
+					"some-annotation=bar",
+					"org.opencontainers.image.source=https://github.com/other-org/other-repo",
+					"org.opencontainers.image.created=1990-01-01T00:00:00Z",
+				},
+			},
+		}
+
+		labels, annotations, err := c.mergeDefaultLabelsAndAnnotations()
+		g.Expect(err).ToNot(HaveOccurred())
+
+		g.Expect(labels).To(Equal([]string{
+			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
+			"org.opencontainers.image.source=https://github.com/org/repo",
+			"org.opencontainers.image.revision=abc123",
+			"some-label=foo",
+			"org.opencontainers.image.revision=main",
+		}))
+		g.Expect(annotations).To(Equal([]string{
+			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
+			"org.opencontainers.image.source=https://github.com/org/repo",
+			"org.opencontainers.image.revision=abc123",
+			"some-annotation=bar",
+			"org.opencontainers.image.source=https://github.com/other-org/other-repo",
+			"org.opencontainers.image.created=1990-01-01T00:00:00Z",
+		}))
+	})
+
+	t.Run("should add legacy labels when requested", func(t *testing.T) {
+		c := &Build{
+			Params: &BuildParams{
+				LegacyBuildTimestamp: "1767225600", // 2026-01-01
+				ImageSource:          "https://github.com/org/repo",
+				ImageRevision:        "abc123",
+				AddLegacyLabels:      true,
+			},
+		}
+
+		labels, annotations, err := c.mergeDefaultLabelsAndAnnotations()
+		g.Expect(err).ToNot(HaveOccurred())
+
+		arch := goArchToArchitectureLabel(runtime.GOARCH)
+		g.Expect(labels).To(Equal([]string{
+			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
+			"org.opencontainers.image.source=https://github.com/org/repo",
+			"org.opencontainers.image.revision=abc123",
+			"build-date=2026-01-01T00:00:00Z",
+			"architecture=" + arch,
+			"vcs-url=https://github.com/org/repo",
+			"vcs-ref=abc123",
+			"vcs-type=git",
+		}))
+		// Should be added *only* as labels, not as annotations
+		g.Expect(annotations).To(Equal([]string{
+			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
+			"org.opencontainers.image.source=https://github.com/org/repo",
+			"org.opencontainers.image.revision=abc123",
+		}))
+	})
+
+	t.Run("should use source-date-epoch value for timestamps", func(t *testing.T) {
+		c := &Build{
+			Params: &BuildParams{
+				LegacyBuildTimestamp: "1767225600", // 2026-01-01
+				AddLegacyLabels:      true,
+			},
+		}
+
+		labels, annotations, err := c.mergeDefaultLabelsAndAnnotations()
+		g.Expect(err).ToNot(HaveOccurred())
+
+		g.Expect(labels).To(ContainElements(
+			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
+			"build-date=2026-01-01T00:00:00Z",
+		))
+		g.Expect(annotations).To(ContainElements(
+			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
+		))
+	})
+
+	t.Run("should add quay.expires-after label when provided", func(t *testing.T) {
+		c := &Build{
+			Params: &BuildParams{
+				QuayImageExpiresAfter: "2w",
+			},
+		}
+
+		labels, annotations, err := c.mergeDefaultLabelsAndAnnotations()
+		g.Expect(err).ToNot(HaveOccurred())
+
+		g.Expect(labels).To(ContainElement("quay.expires-after=2w"))
+		g.Expect(annotations).ToNot(ContainElement("quay.expires-after=2w"))
+	})
+
+	t.Run("should return error for invalid legacy-build-timestamp", func(t *testing.T) {
+		c := &Build{
+			Params: &BuildParams{
+				LegacyBuildTimestamp: "1767225600.5",
+			},
+		}
+
+		_, _, err := c.mergeDefaultLabelsAndAnnotations()
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("determining build timestamp: parsing legacy-build-timestamp:"))
+	})
+
+	t.Run("should return error for invalid source-date-epoch", func(t *testing.T) {
+		c := &Build{
+			Params: &BuildParams{
+				SourceDateEpoch: "1767225600.5",
+			},
+		}
+
+		_, _, err := c.mergeDefaultLabelsAndAnnotations()
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("determining build timestamp: parsing source-date-epoch:"))
 	})
 }

@@ -7,7 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strconv"
 	"strings"
+	"time"
 
 	cliWrappers "github.com/konflux-ci/konflux-build-cli/pkg/cliwrappers"
 	"github.com/konflux-ci/konflux-build-cli/pkg/common"
@@ -88,6 +91,71 @@ var BuildParamsConfig = map[string]common.Parameter{
 		TypeKind:   reflect.Slice,
 		Usage:      "Environment variables to pass to the build using buildah's --env option.",
 	},
+	"labels": {
+		Name:       "labels",
+		ShortName:  "",
+		EnvVarName: "KBC_BUILD_LABELS",
+		TypeKind:   reflect.Slice,
+		Usage:      "Labels to apply to the image using buildah's --label option.",
+	},
+	"annotations": {
+		Name:       "annotations",
+		ShortName:  "",
+		EnvVarName: "KBC_BUILD_ANNOTATIONS",
+		TypeKind:   reflect.Slice,
+		Usage:      "Annotations to apply to the image using buildah's --annotation option.",
+	},
+	"image-source": {
+		Name:       "image-source",
+		ShortName:  "",
+		EnvVarName: "KBC_BUILD_IMAGE_SOURCE",
+		TypeKind:   reflect.String,
+		Usage:      "Set the org.opencontainers.image.source annotation (and label) to this value.",
+	},
+	"image-revision": {
+		Name:       "image-revision",
+		ShortName:  "",
+		EnvVarName: "KBC_BUILD_IMAGE_REVISION",
+		TypeKind:   reflect.String,
+		Usage:      "Set the org.opencontainers.image.revision annotation (and label) to this value.",
+	},
+	"legacy-build-timestamp": {
+		Name:       "legacy-build-timestamp",
+		ShortName:  "",
+		EnvVarName: "KBC_BUILD_LEGACY_BUILD_TIMESTAMP",
+		TypeKind:   reflect.String,
+		Usage:      "Timestamp for the org.opencontainers.image.created annotation (and label). If not provided, uses the current time.\nThis does NOT behave like buildah's --timestamp option, it only sets the annotation and label.\nConflicts with --source-date-epoch.",
+	},
+	"source-date-epoch": {
+		Name:      "source-date-epoch",
+		ShortName: "",
+		// Note: intentionally omits the KBC_BUILD_ prefix. SOURCE_DATE_EPOCH is a standard variable.
+		EnvVarName: "SOURCE_DATE_EPOCH",
+		TypeKind:   reflect.String,
+		Usage:      "See https://www.mankier.com/1/buildah-build#--source-date-epoch.\nThe timestamp will also be used for the org.opencontainers.image.created annotation and label.\nConflicts with --legacy-build-timestamp.",
+	},
+	"rewrite-timestamp": {
+		Name:       "rewrite-timestamp",
+		ShortName:  "",
+		EnvVarName: "KBC_BUILD_REWRITE_TIMESTAMP",
+		TypeKind:   reflect.Bool,
+		Usage:      "See https://www.mankier.com/1/buildah-build#--rewrite-timestamp. Has no effect if --source-date-epoch is not set.",
+	},
+	"quay-image-expires-after": {
+		Name:       "quay-image-expires-after",
+		ShortName:  "",
+		EnvVarName: "KBC_BUILD_QUAY_IMAGE_EXPIRES_AFTER",
+		TypeKind:   reflect.String,
+		Usage:      "Time after which the image expires on quay.io (e.g. 1h, 2d, 3w). Adds the quay.expires-after label.",
+	},
+	"add-legacy-labels": {
+		Name:         "add-legacy-labels",
+		ShortName:    "",
+		EnvVarName:   "KBC_BUILD_ADD_LEGACY_LABELS",
+		TypeKind:     reflect.Bool,
+		DefaultValue: "false",
+		Usage:        "In addition to OCI annotations and labels, also set projectatomic labels (https://github.com/projectatomic/ContainerApplicationGenericLabels).",
+	},
 	"containerfile-json-output": {
 		Name:       "containerfile-json-output",
 		ShortName:  "",
@@ -107,6 +175,15 @@ type BuildParams struct {
 	BuildArgs               []string `paramName:"build-args"`
 	BuildArgsFile           string   `paramName:"build-args-file"`
 	Envs                    []string `paramName:"envs"`
+	Labels                  []string `paramName:"labels"`
+	Annotations             []string `paramName:"annotations"`
+	ImageSource             string   `paramName:"image-source"`
+	ImageRevision           string   `paramName:"image-revision"`
+	LegacyBuildTimestamp    string   `paramName:"legacy-build-timestamp"`
+	SourceDateEpoch         string   `paramName:"source-date-epoch"`
+	RewriteTimestamp        bool     `paramName:"rewrite-timestamp"`
+	QuayImageExpiresAfter   string   `paramName:"quay-image-expires-after"`
+	AddLegacyLabels         bool     `paramName:"add-legacy-labels"`
 	ContainerfileJsonOutput string   `paramName:"containerfile-json-output"`
 	ExtraArgs               []string // Additional arguments to pass to buildah build
 }
@@ -234,6 +311,33 @@ func (c *Build) logParams() {
 	if len(c.Params.Envs) > 0 {
 		l.Logger.Infof("[param] Envs: %v", c.Params.Envs)
 	}
+	if len(c.Params.Labels) > 0 {
+		l.Logger.Infof("[param] Labels: %v", c.Params.Labels)
+	}
+	if len(c.Params.Annotations) > 0 {
+		l.Logger.Infof("[param] Annotations: %v", c.Params.Annotations)
+	}
+	if c.Params.ImageSource != "" {
+		l.Logger.Infof("[param] ImageSource: %s", c.Params.ImageSource)
+	}
+	if c.Params.ImageRevision != "" {
+		l.Logger.Infof("[param] ImageRevision: %s", c.Params.ImageRevision)
+	}
+	if c.Params.QuayImageExpiresAfter != "" {
+		l.Logger.Infof("[param] QuayImageExpiresAfter: %s", c.Params.QuayImageExpiresAfter)
+	}
+	if c.Params.LegacyBuildTimestamp != "" {
+		l.Logger.Infof("[param] LegacyBuildTimestamp: %s", c.Params.LegacyBuildTimestamp)
+	}
+	if c.Params.SourceDateEpoch != "" {
+		l.Logger.Infof("[param] SourceDateEpoch: %s", c.Params.SourceDateEpoch)
+	}
+	if c.Params.RewriteTimestamp {
+		l.Logger.Infof("[param] RewriteTimestamp: %t", c.Params.RewriteTimestamp)
+	}
+	if c.Params.AddLegacyLabels {
+		l.Logger.Infof("[param] AddLegacyLabels: %t", c.Params.AddLegacyLabels)
+	}
 	if c.Params.ContainerfileJsonOutput != "" {
 		l.Logger.Infof("[param] ContainerfileJsonOutput: %s", c.Params.ContainerfileJsonOutput)
 	}
@@ -254,6 +358,15 @@ func (c *Build) validateParams() error {
 		return fmt.Errorf("failed to stat context directory: %w", err)
 	} else if !stat.IsDir() {
 		return fmt.Errorf("context path '%s' is not a directory", c.Params.Context)
+	}
+
+	if c.Params.LegacyBuildTimestamp != "" && c.Params.SourceDateEpoch != "" {
+		return fmt.Errorf("legacy-build-timestamp and source-date-epoch are mutually exclusive")
+	}
+
+	if c.Params.RewriteTimestamp && c.Params.SourceDateEpoch == "" {
+		// Not an error, just a warning (buildah also doesn't error for this combination of flags)
+		l.Logger.Warn("RewriteTimestamp is enabled but SourceDateEpoch was not provided. Timestamps will not be re-written.")
 	}
 
 	return nil
@@ -496,6 +609,110 @@ func processKeyValueEnvs(args []string) map[string]string {
 	return values
 }
 
+// Prepends default labels and annotations to the user-provided arrays.
+// User-provided values override defaults via buildah's "last value wins" behavior.
+//
+// The default annotations are primarily based on the OCI annotation spec:
+// https://specs.opencontainers.org/image-spec/annotations/
+//
+// Note that we also add them as labels, not just annotations. When distributing images
+// in the docker format rather than the OCI format, annotations disappear, so the information
+// is at least preserved as labels.
+//
+// In addition to the OCI annotations (and labels), if AddLegacyLabels is enabled,
+// adds labels based on https://github.com/projectatomic/ContainerApplicationGenericLabels.
+func (c *Build) mergeDefaultLabelsAndAnnotations() ([]string, []string, error) {
+	var defaultLabels []string
+	var defaultAnnotations []string
+
+	buildTimeStr, err := c.getBuildTimeRFC3339()
+	if err != nil {
+		return nil, nil, fmt.Errorf("determining build timestamp: %w", err)
+	}
+	ociCreated := "org.opencontainers.image.created=" + buildTimeStr
+	defaultAnnotations = append(defaultAnnotations, ociCreated)
+	defaultLabels = append(defaultLabels, ociCreated)
+
+	if c.Params.ImageSource != "" {
+		ociSource := "org.opencontainers.image.source=" + c.Params.ImageSource
+
+		defaultAnnotations = append(defaultAnnotations, ociSource)
+		defaultLabels = append(defaultLabels, ociSource)
+	}
+
+	if c.Params.ImageRevision != "" {
+		ociRevision := "org.opencontainers.image.revision=" + c.Params.ImageRevision
+
+		defaultAnnotations = append(defaultAnnotations, ociRevision)
+		defaultLabels = append(defaultLabels, ociRevision)
+	}
+
+	if c.Params.QuayImageExpiresAfter != "" {
+		defaultLabels = append(defaultLabels, "quay.expires-after="+c.Params.QuayImageExpiresAfter)
+	}
+
+	if c.Params.AddLegacyLabels {
+		defaultLabels = append(defaultLabels, "build-date="+buildTimeStr)
+
+		arch := goArchToArchitectureLabel(runtime.GOARCH)
+		defaultLabels = append(defaultLabels, "architecture="+arch)
+
+		if c.Params.ImageSource != "" {
+			defaultLabels = append(defaultLabels, "vcs-url="+c.Params.ImageSource)
+		}
+
+		if c.Params.ImageRevision != "" {
+			defaultLabels = append(defaultLabels, "vcs-ref="+c.Params.ImageRevision)
+		}
+
+		if c.Params.ImageSource != "" || c.Params.ImageRevision != "" {
+			// We don't know if it's git, but this label serves no purpose other than
+			// to appease the default Red Hat label policy, so it doesn't really matter.
+			// https://github.com/release-engineering/rhtap-ec-policy/blob/25b163398303105a539998f1a276f176bf3384b2/data/rule_data.yml#L103
+			defaultLabels = append(defaultLabels, "vcs-type=git")
+		}
+	}
+
+	mergedLabels := append(defaultLabels, c.Params.Labels...)
+	mergedAnnotations := append(defaultAnnotations, c.Params.Annotations...)
+	return mergedLabels, mergedAnnotations, nil
+}
+
+func (c *Build) getBuildTimeRFC3339() (string, error) {
+	var buildTime time.Time
+	if c.Params.SourceDateEpoch != "" {
+		timestamp, err := strconv.ParseInt(c.Params.SourceDateEpoch, 10, 64)
+		if err != nil {
+			return "", fmt.Errorf("parsing source-date-epoch: %w", err)
+		}
+		buildTime = time.Unix(timestamp, 0).UTC()
+	} else if c.Params.LegacyBuildTimestamp != "" {
+		timestamp, err := strconv.ParseInt(c.Params.LegacyBuildTimestamp, 10, 64)
+		if err != nil {
+			return "", fmt.Errorf("parsing legacy-build-timestamp: %w", err)
+		}
+		buildTime = time.Unix(timestamp, 0).UTC()
+	} else {
+		buildTime = time.Now().UTC()
+	}
+	return buildTime.Format(time.RFC3339), nil
+}
+
+// Convert Go's GOARCH value to the value used for the 'architecture' label.
+//
+// Historically, the 'architecture' label used the RPM architecture names rather
+// than the GOARCH names. Keep that the same.
+func goArchToArchitectureLabel(goarch string) string {
+	switch goarch {
+	case "amd64":
+		return "x86_64"
+	case "arm64":
+		return "aarch64"
+	default:
+		return goarch
+	}
+}
+
 func (c *Build) buildImage() error {
 	l.Logger.Info("Building container image...")
 
@@ -508,15 +725,24 @@ func (c *Build) buildImage() error {
 	}
 	defer os.Chdir(originalCwd)
 
+	mergedLabels, mergedAnnotations, err := c.mergeDefaultLabelsAndAnnotations()
+	if err != nil {
+		return err
+	}
+
 	buildArgs := &cliWrappers.BuildahBuildArgs{
-		Containerfile: c.containerfilePath,
-		ContextDir:    c.Params.Context,
-		OutputRef:     c.Params.OutputRef,
-		Secrets:       c.buildahSecrets,
-		BuildArgs:     c.Params.BuildArgs,
-		BuildArgsFile: c.Params.BuildArgsFile,
-		Envs:          c.Params.Envs,
-		ExtraArgs:     c.Params.ExtraArgs,
+		Containerfile:    c.containerfilePath,
+		ContextDir:       c.Params.Context,
+		OutputRef:        c.Params.OutputRef,
+		Secrets:          c.buildahSecrets,
+		BuildArgs:        c.Params.BuildArgs,
+		BuildArgsFile:    c.Params.BuildArgsFile,
+		Envs:             c.Params.Envs,
+		Labels:           mergedLabels,
+		Annotations:      mergedAnnotations,
+		SourceDateEpoch:  c.Params.SourceDateEpoch,
+		RewriteTimestamp: c.Params.RewriteTimestamp,
+		ExtraArgs:        c.Params.ExtraArgs,
 	}
 	if c.Params.WorkdirMount != "" {
 		buildArgs.Volumes = []cliWrappers.BuildahVolume{
