@@ -974,22 +974,17 @@ func (c *Build) determineFinalLabels(df *dockerfile.Dockerfile, userLabels []str
 	}
 
 	// Base image labels
-	if inspectableRef, ok := getInspectableRef(baseImage); ok {
-		l.Logger.Debugf("Pulling base image %s to read labels...", baseImage)
-		err := c.CliWrappers.BuildahCli.Pull(&cliWrappers.BuildahPullArgs{Image: baseImage})
-		if err != nil {
-			return nil, fmt.Errorf("pulling base image %s: %w", baseImage, err)
+	if baseImage != "" {
+		if shouldInspectImage(baseImage) {
+			baseImageLabels, err := c.getImageLabels(baseImage)
+			if err != nil {
+				return nil, fmt.Errorf("getting base image labels: %w", err)
+			}
+			maps.Copy(labels, baseImageLabels)
+		} else {
+			l.Logger.Warnf("Injecting labels.json: ignoring base image labels due to unsupported transport: %s", baseImage)
 		}
-
-		info, err := c.CliWrappers.BuildahCli.InspectImage(inspectableRef)
-		if err != nil {
-			return nil, fmt.Errorf("inspecting base image %s: %w", inspectableRef, err)
-		}
-
-		maps.Copy(labels, info.OCIv1.Config.Labels)
-	} else if baseImage != "" {
-		l.Logger.Warnf("Injecting labels.json: ignoring base image labels due to unsupported transport: %s", baseImage)
-	}
+	} // else base image is FROM scratch => no labels
 
 	// Containerfile labels
 	maps.Copy(labels, containerfileLabels)
@@ -1067,9 +1062,7 @@ func getStageLabels(stage *dockerfile.Stage) map[string]string {
 	return labels
 }
 
-// Determine if the base image is worth inspecting to find its labels.
-// If yes, return the "inspectable reference" of the pulled image
-// (buildah inspect does not support transports).
+// Determine if the image is worth inspecting to find its labels.
 //
 // A base image in the Containerfile can use any of the container transports [1].
 // We only care about container images from a registry, i.e. those that do not specify
@@ -1080,22 +1073,29 @@ func getStageLabels(stage *dockerfile.Stage) map[string]string {
 // created dynamically during the build) or just aren't a real use case.
 //
 // [1]: https://man.archlinux.org/man/containers-transports.5.en
-func getInspectableRef(baseImageRef string) (string, bool) {
-	if baseImageRef == "" {
-		return "", false
+func shouldInspectImage(imageRef string) bool {
+	if imageRef == "" {
+		return false
 	}
 
-	supportedTransports := []string{
+	transport, _ := splitTransport(imageRef)
+	switch transport {
+	case "", "docker://", "containers-storage:":
+		return true
+	default:
+		return false
+	}
+}
+
+// Split an image ref that includes a transport into (transport, image ref).
+//
+// Example:
+// - "docker://registry.io/image:tag" -> ("docker://", "registry.io/image:tag")
+// - "registry.io/image:tag" -> ("", "registry.io/image:tag")
+func splitTransport(imageRef string) (string, string) {
+	transports := []string{
 		"docker://",
 		"containers-storage:",
-	}
-	for _, transport := range supportedTransports {
-		if imageRef, ok := strings.CutPrefix(baseImageRef, transport); ok {
-			return imageRef, true
-		}
-	}
-
-	unsupportedTransports := []string{
 		"dir:",
 		"docker-archive:",
 		"docker-daemon:",
@@ -1103,14 +1103,29 @@ func getInspectableRef(baseImageRef string) (string, bool) {
 		"oci-archive:",
 		"sif:",
 	}
-	for _, transport := range unsupportedTransports {
-		if strings.HasPrefix(baseImageRef, transport) {
-			return "", false
+	for _, transport := range transports {
+		if imageRef, ok := strings.CutPrefix(imageRef, transport); ok {
+			return transport, imageRef
 		}
 	}
+	return "", imageRef
+}
 
-	// No transport protocol in the image ref
-	return baseImageRef, true
+func (c *Build) getImageLabels(imageRef string) (map[string]string, error) {
+	l.Logger.Debugf("Pulling image %s to read labels...", imageRef)
+	err := c.CliWrappers.BuildahCli.Pull(&cliWrappers.BuildahPullArgs{Image: imageRef})
+	if err != nil {
+		return nil, fmt.Errorf("pulling image %s: %w", imageRef, err)
+	}
+
+	// buildah inspect doesn't support the <transport>: prefix, strip it
+	_, inspectableRef := splitTransport(imageRef)
+	info, err := c.CliWrappers.BuildahCli.InspectImage(inspectableRef)
+	if err != nil {
+		return nil, fmt.Errorf("inspecting image %s: %w", inspectableRef, err)
+	}
+
+	return info.OCIv1.Config.Labels, nil
 }
 
 func (c *Build) buildImage() error {

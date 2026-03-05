@@ -2,6 +2,7 @@ package commands
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -1350,35 +1351,70 @@ with.hash.char=this comment # is not a comment
 	})
 }
 
-func Test_getInspectableRef(t *testing.T) {
+func Test_Build_splitTransport(t *testing.T) {
 	g := NewWithT(t)
 
 	tests := []struct {
-		input       string
-		expectedRef string
-		expectedOk  bool
+		input             string
+		expectedTransport string
+		expectedImageRef  string
 	}{
 		// No ref
-		{"", "", false},
+		{"", "", ""},
 		// Plain image refs (no transport)
-		{"registry.io/image:tag", "registry.io/image:tag", true},
-		{"ubuntu:latest", "ubuntu:latest", true},
-		// Supported transports
-		{"docker://registry.io/image:tag", "registry.io/image:tag", true},
-		{"containers-storage:localhost/image:tag", "localhost/image:tag", true},
-		// Unsupported transports
-		{"dir:/path/to/dir", "", false},
-		{"docker-archive:/path/to/archive.tar", "", false},
-		{"docker-daemon:image:tag", "", false},
-		{"oci:/path/to/dir", "", false},
-		{"oci-archive:/path/to/archive.tar", "", false},
-		{"sif:/path/to/file.sif", "", false},
+		{"registry.io/image:tag", "", "registry.io/image:tag"},
+		{"ubuntu:latest", "", "ubuntu:latest"},
+		// Unknown transport (treated the same as no transport, no way to know this isn't a valid image:tag)
+		{"made-up-transport:ubuntu", "", "made-up-transport:ubuntu"},
+		// Known transports
+		{"docker://registry.io/image:tag", "docker://", "registry.io/image:tag"},
+		{"containers-storage:localhost/image:tag", "containers-storage:", "localhost/image:tag"},
+		{"dir:/path/to/dir", "dir:", "/path/to/dir"},
+		{"docker-archive:/path/to/archive.tar", "docker-archive:", "/path/to/archive.tar"},
+		{"docker-daemon:image:tag", "docker-daemon:", "image:tag"},
+		{"oci:/path/to/dir", "oci:", "/path/to/dir"},
+		{"oci-archive:/path/to/archive.tar", "oci-archive:", "/path/to/archive.tar"},
+		{"sif:/path/to/file.sif", "sif:", "/path/to/file.sif"},
 	}
 
 	for _, tc := range tests {
-		ref, ok := getInspectableRef(tc.input)
-		g.Expect(ok).To(Equal(tc.expectedOk), "getInspectableRef(%q) ok", tc.input)
-		g.Expect(ref).To(Equal(tc.expectedRef), "getInspectableRef(%q) ref", tc.input)
+		testCase := fmt.Sprintf("splitTransport(%q)", tc.input)
+		transport, imageRef := splitTransport(tc.input)
+
+		g.Expect(transport).To(Equal(tc.expectedTransport), testCase)
+		g.Expect(imageRef).To(Equal(tc.expectedImageRef), testCase)
+	}
+}
+
+func Test_Build_shouldInspectImage(t *testing.T) {
+	g := NewWithT(t)
+
+	tests := []struct {
+		input          string
+		expectedResult bool
+	}{
+		// No ref
+		{"", false},
+		// Plain image refs (no transport)
+		{"registry.io/image:tag", true},
+		{"ubuntu:latest", true},
+		// Unknown transport (treated the same as no transport, no way to know this isn't a valid image:tag)
+		{"made-up-transport:ubuntu", true},
+		// Supported transports
+		{"docker://registry.io/image:tag", true},
+		{"containers-storage:localhost/image:tag", true},
+		// Unsupported transports
+		{"dir:/path/to/dir", false},
+		{"docker-archive:/path/to/archive.tar", false},
+		{"docker-daemon:image:tag", false},
+		{"oci:/path/to/dir", false},
+		{"oci-archive:/path/to/archive.tar", false},
+		{"sif:/path/to/file.sif", false},
+	}
+
+	for _, tc := range tests {
+		result := shouldInspectImage(tc.input)
+		g.Expect(result).To(Equal(tc.expectedResult), fmt.Sprintf("shouldInspectImage(%q)", tc.input))
 	}
 }
 
