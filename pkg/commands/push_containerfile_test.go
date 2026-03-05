@@ -199,10 +199,16 @@ func TestRun(t *testing.T) {
 			return "localhost.reg.io/app@" + artifactImageDigest, "", nil
 		}
 
-		alternativeFilenames := []string{"Dockerfile", "path/to/Dockerfile"}
+		testCases := []struct {
+			alternativeFilename string
+			shouldSucceed       bool
+		}{
+			{alternativeFilename: "Dockerfile", shouldSucceed: true},
+			{alternativeFilename: "path/to/Dockerfile", shouldSucceed: false},
+		}
 
-		for _, altFilename := range alternativeFilenames {
-			t.Run("use alternative file name "+altFilename, func(t *testing.T) {
+		for _, tc := range testCases {
+			t.Run("use alternative file name "+tc.alternativeFilename, func(t *testing.T) {
 				cmd := &PushContainerfile{
 					Params: &PushContainerfileParams{
 						ImageUrl:            "localhost.reg.io/app",
@@ -211,14 +217,18 @@ func TestRun(t *testing.T) {
 						Containerfile:       "Containerfile",
 						Context:             ".",
 						TagSuffix:           ".dockerfile",
-						AlternativeFilename: altFilename,
+						AlternativeFilename: tc.alternativeFilename,
 					},
 					ResultsWriter: &common.ResultsWriter{},
 					CliWrappers:   PushContainerfileCliWrappers{OrasCli: orasCli},
 				}
 
 				err := cmd.Run()
-				g.Expect(err).ShouldNot(HaveOccurred())
+				if tc.shouldSucceed {
+					g.Expect(err).ShouldNot(HaveOccurred())
+				} else {
+					g.Expect(err).Should(HaveOccurred())
+				}
 			})
 		}
 	})

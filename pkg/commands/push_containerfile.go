@@ -295,7 +295,11 @@ func (c *PushContainerfile) validateParams() error {
 		return fmt.Errorf("Tag suffix includes invalid characters or exceeds the max length of 57 characters.")
 	}
 
-	if len(c.Params.AlternativeFilename) > 100 {
+	altFilename := c.Params.AlternativeFilename
+	if strings.Contains(altFilename, "/") {
+		return fmt.Errorf("Path is included in alternative file name '%s'", altFilename)
+	}
+	if len(altFilename) > 100 {
 		return fmt.Errorf("Alternative file name exceeds 100 characters.")
 	}
 
