@@ -28,8 +28,12 @@ func (m *mockSkopeoCli) Inspect(args *cliwrappers.SkopeoInspectArgs) (string, er
 var _ cliwrappers.BuildahCliInterface = &mockBuildahCli{}
 
 type mockBuildahCli struct {
-	BuildFunc func(args *cliwrappers.BuildahBuildArgs) error
-	PushFunc  func(args *cliwrappers.BuildahPushArgs) (string, error)
+	BuildFunc        func(args *cliwrappers.BuildahBuildArgs) error
+	PushFunc         func(args *cliwrappers.BuildahPushArgs) (string, error)
+	PullFunc         func(args *cliwrappers.BuildahPullArgs) error
+	InspectFunc      func(args *cliwrappers.BuildahInspectArgs) (string, error)
+	InspectImageFunc func(name string) (cliwrappers.BuildahImageInfo, error)
+	VersionFunc      func() (cliwrappers.BuildahVersionInfo, error)
 }
 
 func (m *mockBuildahCli) Build(args *cliwrappers.BuildahBuildArgs) error {
@@ -44,6 +48,34 @@ func (m *mockBuildahCli) Push(args *cliwrappers.BuildahPushArgs) (string, error)
 		return m.PushFunc(args)
 	}
 	return "", nil
+}
+
+func (m *mockBuildahCli) Pull(args *cliwrappers.BuildahPullArgs) error {
+	if m.PullFunc != nil {
+		return m.PullFunc(args)
+	}
+	return nil
+}
+
+func (m *mockBuildahCli) Inspect(args *cliwrappers.BuildahInspectArgs) (string, error) {
+	if m.InspectFunc != nil {
+		return m.InspectFunc(args)
+	}
+	return "", nil
+}
+
+func (m *mockBuildahCli) InspectImage(name string) (cliwrappers.BuildahImageInfo, error) {
+	if m.InspectImageFunc != nil {
+		return m.InspectImageFunc(name)
+	}
+	return cliwrappers.BuildahImageInfo{}, nil
+}
+
+func (m *mockBuildahCli) Version() (cliwrappers.BuildahVersionInfo, error) {
+	if m.VersionFunc != nil {
+		return m.VersionFunc()
+	}
+	return cliwrappers.BuildahVersionInfo{}, nil
 }
 
 var _ cliwrappers.OrasCliInterface = &mockOrasCli{}

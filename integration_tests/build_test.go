@@ -8,6 +8,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +20,7 @@ import (
 )
 
 const (
-	BuildImage = "quay.io/konflux-ci/buildah-task:latest@sha256:5c5eb4117983b324f932f144aa2c2df7ed508174928a423d8551c4e11f30fbd9"
+	BuildImage = "quay.io/konflux-ci/buildah-task:latest@sha256:4c470b5a153c4acd14bf4f8731b5e36c61d7faafe09c2bf376bb81ce84aa5709"
 	// Tests that need a real base image should try to use the same one when possible
 	// (to reduce the time spent pulling base images)
 	baseImage = "registry.access.redhat.com/ubi10/ubi-micro:10.1@sha256:2946fa1b951addbcd548ef59193dc0af9b3e9fedb0287b4ddb6e697b06581622"
@@ -46,7 +47,16 @@ type BuildParams struct {
 	QuayImageExpiresAfter   string
 	AddLegacyLabels         bool
 	ContainerfileJsonOutput string
-	ExtraArgs               []string
+	SkipInjections          bool
+	// Defaults to true in the CLI, need a way to distinguish between explicitly false and unset
+	InheritLabels              *bool
+	IncludeLegacyBuildinfoPath bool
+	Target                     string
+	ExtraArgs                  []string
+}
+
+func boolptr(v bool) *bool {
+	return &v
 }
 
 // Public interface for parity with ApplyTags. Not used in these tests directly.
@@ -56,10 +66,10 @@ func RunBuild(buildParams BuildParams, imageRegistry ImageRegistry) error {
 	// doesn't work reliably with host volume mounts through the VM
 	if runtime.GOOS != "darwin" {
 		containerStoragePath, err := createContainerStorageDir()
+		defer removeContainerStorageDir(containerStoragePath)
 		if err != nil {
 			return err
 		}
-		defer removeContainerStorageDir(containerStoragePath)
 		opts = append(opts, WithVolumeWithOptions(containerStoragePath, "/var/lib/containers", "z"))
 	}
 
@@ -97,6 +107,12 @@ func createContainerStorageDir() (string, error) {
 		return "", err
 	}
 
+	// Tests may run the BuildImage as a non-root user. Allow this user to write to the
+	// container storage dir (by allowing everyone to write).
+	if err := os.Chmod(tmpDir, 0777); err != nil {
+		return tmpDir, err
+	}
+
 	return tmpDir, nil
 }
 
@@ -104,6 +120,10 @@ func createContainerStorageDir() (string, error) {
 // and the parent .test-containers-storage directory if empty.
 // The cleanup is best-effort and ignores errors.
 func removeContainerStorageDir(containerStoragePath string) {
+	if containerStoragePath == "" {
+		return
+	}
+
 	// 1. 'chmod -R' to ensure write permissions (container storage often includes read-only files)
 	_ = filepath.WalkDir(containerStoragePath, func(path string, d fs.DirEntry, err error) error {
 		// Ignore errors, try to chmod everything if possible
@@ -209,6 +229,18 @@ func runBuildWithOutput(container *TestRunnerContainer, buildParams BuildParams)
 	if buildParams.ContainerfileJsonOutput != "" {
 		args = append(args, "--containerfile-json-output", buildParams.ContainerfileJsonOutput)
 	}
+	if buildParams.SkipInjections {
+		args = append(args, "--skip-injections")
+	}
+	if buildParams.IncludeLegacyBuildinfoPath {
+		args = append(args, "--include-legacy-buildinfo-path")
+	}
+	if buildParams.InheritLabels != nil {
+		args = append(args, fmt.Sprintf("--inherit-labels=%t", *buildParams.InheritLabels))
+	}
+	if buildParams.Target != "" {
+		args = append(args, "--target", buildParams.Target)
+	}
 	// Add separator and extra args if provided
 	if len(buildParams.ExtraArgs) > 0 {
 		args = append(args, "--")
@@ -255,6 +287,7 @@ type containerImageMeta struct {
 	labels      map[string]string
 	annotations map[string]string
 	envs        map[string]string
+	layer_ids   []string
 }
 
 func getImageMeta(container *TestRunnerContainer, imageRef string) containerImageMeta {
@@ -268,6 +301,9 @@ func getImageMeta(container *TestRunnerContainer, imageRef string) containerImag
 				Labels map[string]string
 				Env    []string
 			} `json:"config"`
+			Rootfs struct {
+				DiffIDs []string `json:"diff_ids"`
+			} `json:"rootfs"`
 		}
 		ImageAnnotations map[string]string
 		// This field has the same value as the output of
@@ -290,6 +326,7 @@ func getImageMeta(container *TestRunnerContainer, imageRef string) containerImag
 		labels:      inspect.OCIv1.Config.Labels,
 		annotations: inspect.ImageAnnotations,
 		envs:        envs,
+		layer_ids:   inspect.OCIv1.Rootfs.DiffIDs,
 	}
 }
 
@@ -335,6 +372,26 @@ func getContainerfileMeta(container *TestRunnerContainer, containerfileJsonPath 
 	return containerImageMeta{labels: labels, envs: envs}
 }
 
+func getLabelsFromLabelsJson(container *TestRunnerContainer, imageRef string) map[string]string {
+	labelsJSON := getFileContentFromOutputImage(container, imageRef, "/usr/share/buildinfo/labels.json")
+
+	var labels map[string]string
+	err := json.Unmarshal([]byte(labelsJSON), &labels)
+	Expect(err).ToNot(HaveOccurred())
+
+	return labels
+}
+
+func getLegacyLabelsJson(container *TestRunnerContainer, imageRef string) map[string]string {
+	labelsJSON := getFileContentFromOutputImage(container, imageRef, "/root/buildinfo/labels.json")
+
+	var labels map[string]string
+	err := json.Unmarshal([]byte(labelsJSON), &labels)
+	Expect(err).ToNot(HaveOccurred())
+
+	return labels
+}
+
 func formatAsKeyValuePairs(m map[string]string) []string {
 	var pairs []string
 	for k, v := range m {
@@ -343,17 +400,69 @@ func formatAsKeyValuePairs(m map[string]string) []string {
 	return pairs
 }
 
+func getFileContentFromOutputImage(container *TestRunnerContainer, imageRef string, filePath string) string {
+	return runWithMountedOutputImage(container, imageRef, `cat "$CONTAINER_ROOT"/`+filePath)
+}
+
+func statFileInOutputImage(container *TestRunnerContainer, imageRef string, filePath string) string {
+	return runWithMountedOutputImage(container, imageRef, `stat "$CONTAINER_ROOT"/`+filePath)
+}
+
+func fileExistsInOutputImage(container *TestRunnerContainer, imageRef string, filePath string) bool {
+	stdout := runWithMountedOutputImage(container, imageRef,
+		`if [[ -e "$CONTAINER_ROOT"/`+filePath+" ]]; then echo exists; else echo does not exist; fi")
+
+	return strings.TrimSpace(stdout) == "exists"
+}
+
+// Mount the filesystem of the 'imageRef' container, set CONTAINER_ROOT=<root of mount point>
+// and execute the 'script'.
+//
+// This approach uses 'buildah unshare --mount' to make it possible to do assertions about the
+// content of the built image.
+//
+// Other possible approaches that didn't work:
+// - Use 'buildah run $containerID ...' (most tests are FROM scratch, there are no executables to run)
+// - Use 'buildah mount' directly (failed with "Error: overlay: failed to make mount private ... operation not permitted")
+func runWithMountedOutputImage(container *TestRunnerContainer, imageRef string, script string) string {
+	err := container.ExecuteCommand("buildah", "from", "--name=testcontainer", imageRef)
+	Expect(err).ToNot(HaveOccurred())
+	defer container.ExecuteCommand("buildah", "rm", "testcontainer")
+
+	stdout, _, err := container.ExecuteCommandWithOutput(
+		"buildah", "unshare", "--mount", "CONTAINER_ROOT=testcontainer", "--", "bash", "-c", script,
+	)
+	Expect(err).ToNot(HaveOccurred())
+
+	return stdout
+}
+
+// By default, Expect(m1).To(Equal(m2)) is very hard to process on failure,
+// because the maps are printed in a random order and the error doesn't specify
+// which keys differ.
+// Format the maps as key value pairs, sort them and use ConsistOf instead of Equal,
+// which shows the differing key value pairs.
+func expectEqualMaps(m1 map[string]string, m2 map[string]string, description ...any) {
+	m1pairs := formatAsKeyValuePairs(m1)
+	slices.Sort(m1pairs)
+
+	m2pairs := formatAsKeyValuePairs(m2)
+	slices.Sort(m2pairs)
+
+	Expect(m1pairs).To(ConsistOf(m2pairs), description...)
+}
+
 func TestBuild(t *testing.T) {
 	SetupGomega(t)
 
-	commonOpts := []ContainerOption{}
+	commonOpts := []ContainerOption{WithUser("taskuser")}
 	// On macOS, containers run in a Linux VM; overlay storage driver
 	// doesn't work reliably with host volume mounts through the VM
 	if runtime.GOOS != "darwin" {
 		containerStoragePath, err := createContainerStorageDir()
-		Expect(err).ToNot(HaveOccurred())
 		t.Cleanup(func() { removeContainerStorageDir(containerStoragePath) })
-		commonOpts = append(commonOpts, WithVolumeWithOptions(containerStoragePath, "/var/lib/containers", "z"))
+		Expect(err).ToNot(HaveOccurred())
+		commonOpts = append(commonOpts, WithVolumeWithOptions(containerStoragePath, "/home/taskuser/.local/share/containers", "z"))
 	}
 
 	setupBuildContainerWithCleanup := func(
@@ -654,6 +763,10 @@ LABEL test.label="build-args-test"
 		// Verify the parsed Containerfile has the same label values
 		containerfileLabels := formatAsKeyValuePairs(containerfileMeta.labels)
 		Expect(containerfileLabels).To(ContainElements(expectedLabels))
+
+		// Verify that /usr/share/buildinfo/labels.json also has the same label values
+		buildInfoLabels := formatAsKeyValuePairs(getLabelsFromLabelsJson(container, outputRef))
+		Expect(buildInfoLabels).To(ContainElements(expectedLabels))
 	})
 
 	t.Run("PlatformBuildArgs", func(t *testing.T) {
@@ -698,9 +811,10 @@ LABEL test.label="platform-build-args-test"
 		err := runBuild(container, buildParams)
 		Expect(err).ToNot(HaveOccurred())
 
-		// Verify platform values match between the parsed Containerfile and the actual image
+		// Verify platform values match between the parsed Containerfile, the actual image and buildinfo
 		imageLabels := getImageMeta(container, outputRef).labels
 		containerfileLabels := getContainerfileMeta(container, containerfileJsonPath).labels
+		buildinfoLabels := getLabelsFromLabelsJson(container, outputRef)
 
 		labelsToCheck := []string{
 			"TARGETPLATFORM",
@@ -716,9 +830,13 @@ LABEL test.label="platform-build-args-test"
 		for _, label := range labelsToCheck {
 			imageLabel := imageLabels[label]
 			containerfileLabel := containerfileLabels[label]
+			buildinfoLabel := buildinfoLabels[label]
 
 			Expect(imageLabel).To(Equal(containerfileLabel),
 				fmt.Sprintf("image label: %s=%s; containerfile label: %s=%s", label, imageLabel, label, containerfileLabel),
+			)
+			Expect(imageLabel).To(Equal(buildinfoLabel),
+				fmt.Sprintf("image label: %s=%s; buildinfo label: %s=%s", label, imageLabel, label, buildinfoLabel),
 			)
 		}
 	})
@@ -846,6 +964,9 @@ LABEL test.label="envs-test"
 
 		containerfileLabels := formatAsKeyValuePairs(containerfileMeta.labels)
 		Expect(containerfileLabels).To(ContainElements(expectedLabels))
+
+		buildinfoLabels := formatAsKeyValuePairs(getLabelsFromLabelsJson(container, outputRef))
+		Expect(buildinfoLabels).To(ContainElements(expectedLabels))
 	})
 
 	t.Run("WithLabelsAndAnnotations", func(t *testing.T) {
@@ -878,10 +999,7 @@ LABEL test.label="envs-test"
 		err := runBuild(container, buildParams)
 		Expect(err).ToNot(HaveOccurred())
 
-		imageMeta := getImageMeta(container, outputRef)
-
-		imageLabels := formatAsKeyValuePairs(imageMeta.labels)
-		Expect(imageLabels).To(ContainElements(
+		expectedLabels := []string{
 			"custom.label1=value1",
 			"custom.label2=value2",
 			// default labels (with user-supplied values)
@@ -889,17 +1007,27 @@ LABEL test.label="envs-test"
 			"org.opencontainers.image.revision=abc123",
 			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
 			"quay.expires-after=2w",
-		))
+		}
 
-		imageAnnotations := formatAsKeyValuePairs(imageMeta.annotations)
-		Expect(imageAnnotations).To(ContainElements(
+		expectedAnnotations := []string{
 			"org.opencontainers.image.title=King Arthur",
 			"org.opencontainers.image.description=Elected by farcical aquatic ceremony.",
 			// default annotations (with user-supplied values)
 			"org.opencontainers.image.source=https://github.com/konflux-ci/test",
 			"org.opencontainers.image.revision=abc123",
 			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
-		))
+		}
+
+		imageMeta := getImageMeta(container, outputRef)
+
+		imageLabels := formatAsKeyValuePairs(imageMeta.labels)
+		Expect(imageLabels).To(ContainElements(expectedLabels))
+
+		buildinfoLabels := formatAsKeyValuePairs(getLabelsFromLabelsJson(container, outputRef))
+		Expect(buildinfoLabels).To(ContainElements(expectedLabels))
+
+		imageAnnotations := formatAsKeyValuePairs(imageMeta.annotations)
+		Expect(imageAnnotations).To(ContainElements(expectedAnnotations))
 	})
 
 	t.Run("AnnotationsFile", func(t *testing.T) {
@@ -984,6 +1112,11 @@ common.annotation=overriden-by-cli-annotation
 			"org.opencontainers.image.source=https://user-override.com",
 			"org.opencontainers.image.revision=default",
 		))
+		buildinfoLabels := formatAsKeyValuePairs(getLabelsFromLabelsJson(container, outputRef))
+		Expect(buildinfoLabels).To(ContainElements(
+			"org.opencontainers.image.source=https://user-override.com",
+			"org.opencontainers.image.revision=default",
+		))
 
 		imageAnnotations := formatAsKeyValuePairs(imageMeta.annotations)
 		Expect(imageAnnotations).To(ContainElements(
@@ -1015,19 +1148,14 @@ common.annotation=overriden-by-cli-annotation
 		Expect(err).ToNot(HaveOccurred())
 
 		imageMeta := getImageMeta(container, outputRef)
+		buildinfoLabels := getLabelsFromLabelsJson(container, outputRef)
 
 		// Get the expected architecture from 'uname -m' in the container
 		stdout, _, err := container.ExecuteCommandWithOutput("uname", "-m")
 		Expect(err).ToNot(HaveOccurred())
 		expectedArch := strings.TrimSpace(stdout)
 
-		imageLabels := formatAsKeyValuePairs(imageMeta.labels)
-
-		Expect(imageMeta.labels).To(HaveKey("architecture"))
-		Expect(imageMeta.labels["architecture"]).To(Equal(expectedArch),
-			"architecture label should match uname -m output")
-
-		Expect(imageLabels).To(ContainElements(
+		expectedLabels := []string{
 			"org.opencontainers.image.source=https://github.com/konflux-ci/test",
 			"vcs-url=https://github.com/konflux-ci/test",
 			"org.opencontainers.image.revision=abc123",
@@ -1035,7 +1163,20 @@ common.annotation=overriden-by-cli-annotation
 			"vcs-type=git",
 			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
 			"build-date=2026-01-01T00:00:00Z",
-		))
+		}
+
+		imageLabels := formatAsKeyValuePairs(imageMeta.labels)
+		buildinfoLabelPairs := formatAsKeyValuePairs(buildinfoLabels)
+
+		Expect(imageMeta.labels).To(HaveKey("architecture"))
+		Expect(imageMeta.labels["architecture"]).To(Equal(expectedArch),
+			"architecture label should match uname -m output")
+		Expect(buildinfoLabels).To(HaveKey("architecture"))
+		Expect(buildinfoLabels["architecture"]).To(Equal(expectedArch),
+			"architecture label should match uname -m output")
+
+		Expect(imageLabels).To(ContainElements(expectedLabels))
+		Expect(buildinfoLabelPairs).To(ContainElements(expectedLabels))
 
 		// Annotations should not include legacy labels
 		imageAnnotations := formatAsKeyValuePairs(imageMeta.annotations)
@@ -1154,6 +1295,10 @@ COPY hello.txt /hello.txt
 				// the timestamp of /hello.txt inside the built image will be clamped to 2026-01-01
 				SourceDateEpoch:  "1767225600",
 				RewriteTimestamp: true,
+				// Add more labels to test that injecting labels.json doesn't break reproducibility.
+				// E.g. if the order of labels in the file was random, it *would* break reproducibility.
+				AddLegacyLabels: true,
+				Labels:          []string{"label1=foo", "label2=bar"},
 				ExtraArgs: []string{
 					// Ensure the image config will be exactly the same regardles of the host OS/architecture
 					"--platform", "linux/amd64",
@@ -1175,7 +1320,7 @@ COPY hello.txt /hello.txt
 
 		// Thanks to all time-related metadata being set to 2026-01-01, the build is fully reproducible
 		// and the digest will stay the same every time.
-		Expect(imageMeta1.digest).To(Equal("sha256:e0af303a3dea2d5339af66071540d35043b51889d1b770289405498b87dd9987"))
+		Expect(imageMeta1.digest).To(Equal("sha256:678998fc429d59022f0966551854f99bd1c553c01b74a093a420a927576f5d8a"))
 		Expect(imageMeta1.created).To(Equal("2026-01-01T00:00:00Z"))
 
 		// Ensure the hello.txt file created for the second test really does get a different timestamp
@@ -1185,5 +1330,613 @@ COPY hello.txt /hello.txt
 		// The built image should have the same digest both times.
 		imageMeta2 := buildImage()
 		Expect(imageMeta2.digest).To(Equal(imageMeta1.digest), "Digest unexpectedly changed after rebuild")
+	})
+
+	t.Run("InjectingBuildinfo", func(t *testing.T) {
+		t.Run("LabelsJSON", func(t *testing.T) {
+			contextDir := setupTestContext(t)
+
+			writeContainerfile(contextDir, fmt.Sprintf(`
+# Real base image with its own labels, such as:
+# - com.redhat.component
+# - name
+# - vendor
+FROM %s
+
+# Built-in buildarg
+ARG BUILDOS
+LABEL build.os=$BUILDOS
+
+# User-provided arg
+ARG FOO
+LABEL buildarg.label=$FOO
+
+# User-provided env
+LABEL env.label=$BAR
+
+# Static value
+LABEL static.label=static-value
+
+# Same as a regular buildah build, the number of layers in the resulting image
+# should be [number of layers in the base image] + 1. Injecting the labels.json
+# file must not affect that. To verify this, add more instructions that create
+# layers, otherwise the injected COPY instruction could be the only one.
+RUN echo "this instruction creates an intermediate layer" > /tmp/foo.txt
+RUN echo "this instruction also creates an intermediate layer" > /tmp/bar.txt
+`, baseImage))
+
+			outputRef := "localhost/test-injecting-buildinfo-all-label-sources:" + GenerateUniqueTag(t)
+
+			buildParams := BuildParams{
+				Context:   contextDir,
+				OutputRef: outputRef,
+				Push:      false,
+				// Set a conspicuous source date epoch so that we can more easily verify
+				// that our 'created' label overrides the one from the base image
+				SourceDateEpoch: "882921600", // 1997-12-24
+				BuildArgs:       []string{"FOO=foo"},
+				Envs:            []string{"BAR=bar"},
+				Labels:          []string{"cli.label=value-gets-overriden", "cli.label=label-from-CLI"},
+			}
+
+			container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+			err := runBuild(container, buildParams)
+			Expect(err).ToNot(HaveOccurred())
+
+			injectedLabels := getLabelsFromLabelsJson(container, outputRef)
+			Expect(injectedLabels).To(SatisfyAll(
+				// Base image labels
+				HaveKeyWithValue("com.redhat.component", "ubi10-micro-container"),
+				HaveKeyWithValue("name", "ubi10/ubi-micro"),
+				HaveKeyWithValue("vendor", "Red Hat, Inc."),
+				// Normally auto-injected, but not if --timestamp or --source-date-epoch is used
+				// (see https://www.mankier.com/1/buildah-build#--identity-label).
+				// So in this case, it comes from the base image.
+				HaveKeyWithValue("io.buildah.version", "1.41.4"),
+				// Containerfile labels
+				HaveKeyWithValue("build.os", "linux"),
+				HaveKeyWithValue("buildarg.label", "foo"),
+				HaveKeyWithValue("env.label", "bar"),
+				HaveKeyWithValue("static.label", "static-value"),
+				// Auto-injected labels
+				HaveKeyWithValue("org.opencontainers.image.created", "1997-12-24T00:00:00Z"),
+				// CLI labels
+				HaveKeyWithValue("cli.label", "label-from-CLI"),
+			))
+
+			imageMeta := getImageMeta(container, outputRef)
+			expectEqualMaps(injectedLabels, imageMeta.labels,
+				"Expected labels.json (top) to match the actual image labels (bottom)")
+
+			Expect(imageMeta.layer_ids).To(HaveLen(2),
+				"Expected the output image to have 2 layers: [number of base image layers] + 1",
+			)
+
+			stat := statFileInOutputImage(container, outputRef, "/usr/share/buildinfo/labels.json")
+			Expect(stat).To(ContainSubstring("Access: (0644/-rw-r--r--)"),
+				"The injected labels.json file should have mode 0644")
+
+			// The image WILL have /root/buildinfo/labels.json even though we don't inject it by default.
+			// It comes from the base image, which already has the file.
+			legacyLabels := getLegacyLabelsJson(container, outputRef)
+			Expect(legacyLabels).To(SatisfyAll(
+				// Has base image labels
+				HaveKeyWithValue("com.redhat.component", "ubi10-micro-container"),
+				HaveKeyWithValue("name", "ubi10/ubi-micro"),
+				HaveKeyWithValue("vendor", "Red Hat, Inc."),
+				// But not any of the new labels
+				Not(HaveKey("build.os")),
+				Not(HaveKey("buildarg.label")),
+				Not(HaveKey("env.label")),
+				Not(HaveKey("static.label")),
+				Not(HaveKey("cli.label")),
+			))
+		})
+
+		t.Run("LabelsFromEarlierStages", func(t *testing.T) {
+			contextDir := setupTestContext(t)
+
+			writeContainerfile(contextDir, fmt.Sprintf(`
+# Real base image used for an earlier stage
+FROM %s AS stage1
+
+LABEL stage1.label=value-gets-overriden
+LABEL stage1.label=label-from-stage1
+
+LABEL common.build.label=overriden-in-stage-2
+LABEL common.label=overriden-in-final-stage
+
+
+FROM stage1 AS stage2
+
+LABEL stage2.label=value-gets-overriden
+LABEL stage2.label=label-from-stage2
+
+LABEL common.build.label=common-build-stage2
+
+
+# Not a dependency for the final stage, buildah will skip this completely
+FROM base.image.does.not/exist:latest AS unused-stage
+
+LABEL unused.stage.label=label-from-unused-stage
+
+
+FROM stage2
+
+LABEL final.stage.label=value-gets-overriden
+LABEL final.stage.label=label-from-final-stage
+
+LABEL common.label=common-final-stage
+`, baseImage))
+
+			outputRef := "localhost/test-injecting-buildinfo-labels-from-earlier-stages:" + GenerateUniqueTag(t)
+
+			buildParams := BuildParams{
+				Context:   contextDir,
+				OutputRef: outputRef,
+				Push:      false,
+			}
+
+			container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+			err := runBuild(container, buildParams)
+			Expect(err).ToNot(HaveOccurred())
+
+			injectedLabels := getLabelsFromLabelsJson(container, outputRef)
+			Expect(injectedLabels).To(SatisfyAll(
+				// Base image labels
+				HaveKeyWithValue("com.redhat.component", "ubi10-micro-container"),
+				HaveKeyWithValue("name", "ubi10/ubi-micro"),
+				HaveKeyWithValue("vendor", "Red Hat, Inc."),
+				// Labels from stages
+				HaveKeyWithValue("stage1.label", "label-from-stage1"),
+				HaveKeyWithValue("stage2.label", "label-from-stage2"),
+				HaveKeyWithValue("final.stage.label", "label-from-final-stage"),
+				HaveKeyWithValue("common.build.label", "common-build-stage2"),
+				HaveKeyWithValue("common.label", "common-final-stage"),
+				// Buildah version label. We don't know the version, just check that it exists.
+				// The correct value is later verified by comparing labels.json to the actual labels.
+				HaveKey("io.buildah.version"),
+				// Should not have label from unused stage
+				Not(HaveKey("unused.stage.label")),
+			))
+
+			imageMeta := getImageMeta(container, outputRef)
+			expectEqualMaps(injectedLabels, imageMeta.labels,
+				"Expected labels.json (top) to match the actual image labels (bottom)")
+		})
+
+		t.Run("LabelsFromScratch", func(t *testing.T) {
+			contextDir := setupTestContext(t)
+
+			writeContainerfile(contextDir, `
+FROM scratch
+
+LABEL containerfile.label=label-from-containerfile
+`)
+
+			outputRef := "localhost/test-injecting-buildinfo-labels-from-scratch:" + GenerateUniqueTag(t)
+
+			buildParams := BuildParams{
+				Context:   contextDir,
+				OutputRef: outputRef,
+				Push:      false,
+				Labels:    []string{"cli.label=label-from-CLI"},
+			}
+
+			container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+			err := runBuild(container, buildParams)
+			Expect(err).ToNot(HaveOccurred())
+
+			injectedLabels := getLabelsFromLabelsJson(container, outputRef)
+			Expect(injectedLabels).To(SatisfyAll(
+				HaveKey("org.opencontainers.image.created"),
+				HaveKeyWithValue("containerfile.label", "label-from-containerfile"),
+				HaveKeyWithValue("cli.label", "label-from-CLI"),
+			))
+
+			imageMeta := getImageMeta(container, outputRef)
+			expectEqualMaps(injectedLabels, imageMeta.labels,
+				"Expected labels.json (top) to match the actual image labels (bottom)")
+
+			legacyPathExists := fileExistsInOutputImage(container, outputRef, "/root/buildinfo/labels.json")
+			Expect(legacyPathExists).To(BeFalse(), "Should not have injected /root/buildinfo/labels.json by default")
+		})
+
+		t.Run("AvoidsContainerignore", func(t *testing.T) {
+			contextDir := setupTestContext(t)
+
+			writeContainerfile(contextDir, `FROM scratch`)
+
+			testutil.WriteFileTree(t, contextDir, map[string]string{
+				// Ignore everything, but has no effect on COPY --from=<different buildcontext>
+				".containerignore": "*\n.*\n",
+			})
+
+			outputRef := "localhost/test-injecting-buildinfo-force-through-containerignore:" + GenerateUniqueTag(t)
+
+			buildParams := BuildParams{
+				Context:   contextDir,
+				OutputRef: outputRef,
+				Push:      false,
+			}
+
+			container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+			err := runBuild(container, buildParams)
+			Expect(err).ToNot(HaveOccurred())
+
+			injectedLabels := getLabelsFromLabelsJson(container, outputRef)
+			Expect(injectedLabels).To(HaveKey("io.buildah.version"))
+			Expect(injectedLabels).To(HaveKey("org.opencontainers.image.created"))
+
+			imageMeta := getImageMeta(container, outputRef)
+			expectEqualMaps(injectedLabels, imageMeta.labels,
+				"Expected labels.json (top) to match the actual image labels (bottom)")
+		})
+
+		t.Run("BuildahVersionPrecedence", func(t *testing.T) {
+			contextDir := setupTestContext(t)
+
+			writeContainerfile(contextDir, `
+FROM scratch
+
+LABEL io.buildah.version=0.0.1
+`)
+
+			outputRef := "localhost/test-injecting-buildinfo-buildah-version-precedence:" + GenerateUniqueTag(t)
+
+			buildParams := BuildParams{
+				Context:   contextDir,
+				OutputRef: outputRef,
+				Push:      false,
+				Labels:    []string{"io.buildah.version=0.1.0"},
+			}
+
+			container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+			err := runBuild(container, buildParams)
+			Expect(err).ToNot(HaveOccurred())
+
+			injectedLabels := getLabelsFromLabelsJson(container, outputRef)
+			Expect(injectedLabels).To(HaveKey("io.buildah.version"))
+			// The auto-injected buildah version label cannot be overriden by anything
+			Expect(injectedLabels["io.buildah.version"]).To(Not(HavePrefix("0")))
+
+			imageMeta := getImageMeta(container, outputRef)
+			expectEqualMaps(injectedLabels, imageMeta.labels,
+				"Expected labels.json (top) to match the actual image labels (bottom)")
+		})
+
+		t.Run("NoBuildahVersion", func(t *testing.T) {
+			contextDir := setupTestContext(t)
+
+			writeContainerfile(contextDir, `FROM scratch`)
+
+			outputRef := "localhost/test-injecting-buildinfo-no-buildah-version:" + GenerateUniqueTag(t)
+
+			buildParams := BuildParams{
+				Context:   contextDir,
+				OutputRef: outputRef,
+				Push:      false,
+				// --source-date-epoch disables the io.buildah.version injection
+				SourceDateEpoch: "1767225600",
+			}
+
+			container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+			err := runBuild(container, buildParams)
+			Expect(err).ToNot(HaveOccurred())
+
+			injectedLabels := getLabelsFromLabelsJson(container, outputRef)
+			Expect(injectedLabels).ToNot(HaveKey("io.buildah.version"))
+
+			imageMeta := getImageMeta(container, outputRef)
+			expectEqualMaps(injectedLabels, imageMeta.labels,
+				"Expected labels.json (top) to match the actual image labels (bottom)")
+		})
+
+		t.Run("SkipInjections", func(t *testing.T) {
+			contextDir := setupTestContext(t)
+
+			writeContainerfile(contextDir, `FROM scratch`)
+
+			outputRef := "localhost/test-injecting-buildinfo-skip-injections:" + GenerateUniqueTag(t)
+
+			buildParams := BuildParams{
+				Context:        contextDir,
+				OutputRef:      outputRef,
+				Push:           false,
+				SkipInjections: true,
+			}
+
+			container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+			err := runBuild(container, buildParams)
+			Expect(err).ToNot(HaveOccurred())
+
+			exists := fileExistsInOutputImage(container, outputRef, "/usr/share/buildinfo/labels.json")
+			Expect(exists).To(BeFalse(), "Should not have injected /usr/share/buildinfo/labels.json")
+
+			exists2 := fileExistsInOutputImage(container, outputRef, "/root/buildinfo/labels.json")
+			Expect(exists2).To(BeFalse(), "Should not have injected /root/buildinfo/labels.json")
+		})
+
+		t.Run("LegacyBuildinfoPath", func(t *testing.T) {
+			contextDir := setupTestContext(t)
+
+			writeContainerfile(contextDir, `FROM scratch`)
+
+			outputRef := "localhost/test-injecting-buildinfo-legacy-buildinfo-path:" + GenerateUniqueTag(t)
+
+			buildParams := BuildParams{
+				Context:                    contextDir,
+				OutputRef:                  outputRef,
+				Push:                       false,
+				IncludeLegacyBuildinfoPath: true,
+				Labels:                     []string{"foo=bar"},
+			}
+
+			container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+			err := runBuild(container, buildParams)
+			Expect(err).ToNot(HaveOccurred())
+
+			labelsContent := getFileContentFromOutputImage(container, outputRef, "/usr/share/buildinfo/labels.json")
+			legacyLabelsContent := getFileContentFromOutputImage(container, outputRef, "/root/buildinfo/labels.json")
+
+			// The files should be byte-for-byte equal, compare the actual content
+			Expect(labelsContent).To(Equal(legacyLabelsContent),
+				"/usr/share/buildinfo/labels.json (top) does not match /root/buildinfo/labels.json (bottom)")
+
+			Expect(labelsContent).To(ContainSubstring(`"foo": "bar"`))
+
+			stat := statFileInOutputImage(container, outputRef, "/root/buildinfo/labels.json")
+			Expect(stat).To(ContainSubstring("Access: (0644/-rw-r--r--)"),
+				"The injected labels.json file should have mode 0644")
+		})
+
+		t.Run("KnownIssues", func(t *testing.T) {
+			t.Run("UnsupportedBaseImage", func(t *testing.T) {
+				contextDir := setupTestContext(t)
+
+				writeContainerfile(contextDir, `
+# Note that this case is technically supportable, because the ./base_image exists
+# before the build starts, so we *could* inspect it.
+# But for any real-world use cases, this will not be the case. The ./base_image
+# will be created during the build (like in the WorkdirMount testcase).
+FROM oci:./base_image
+
+LABEL containerfile.label=containerfile-label
+`)
+
+				outputRef := "localhost/test-injecting-buildinfo-unsupported-base-image:" + GenerateUniqueTag(t)
+
+				buildParams := BuildParams{
+					Context:   contextDir,
+					OutputRef: outputRef,
+					Push:      false,
+					Labels:    []string{"cli.label=cli-label"},
+				}
+
+				container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+				err := container.ExecuteCommand("buildah", "pull", baseImage)
+				Expect(err).ToNot(HaveOccurred())
+				// Push baseimage to <contextDir>/base_image (contextDir is mounted at /workspace)
+				err = container.ExecuteCommand(
+					"buildah", "push", "--remove-signatures", baseImage, "oci:/workspace/base_image",
+				)
+				Expect(err).ToNot(HaveOccurred())
+
+				err = runBuild(container, buildParams)
+				Expect(err).ToNot(HaveOccurred())
+
+				injectedLabels := getLabelsFromLabelsJson(container, outputRef)
+				// labels.json will still have labels from Containerfile etc.
+				Expect(injectedLabels).To(SatisfyAll(
+					HaveKeyWithValue("containerfile.label", "containerfile-label"),
+					HaveKeyWithValue("cli.label", "cli-label"),
+					HaveKey("io.buildah.version"),
+				))
+				// labels.json will NOT have any base image labels
+				Expect(injectedLabels).To(SatisfyAll(
+					Not(HaveKey("com.redhat.component")),
+					Not(HaveKey("name")),
+					Not(HaveKey("vendor")),
+				))
+				// but the actual image WILL have them
+				imageMeta := getImageMeta(container, outputRef)
+				Expect(imageMeta.labels).To(SatisfyAll(
+					HaveKey("com.redhat.component"),
+					HaveKey("name"),
+					HaveKey("vendor"),
+				))
+			})
+
+			t.Run("UnsupportedWithTarget", func(t *testing.T) {
+				contextDir := setupTestContext(t)
+
+				writeContainerfile(contextDir, `
+FROM scratch AS stage1
+
+LABEL stage1.label=label-from-stage1
+
+FROM stage1
+
+LABEL final.stage.label=label-from-final-stage
+`)
+
+				outputRef := "localhost/test-injecting-buildinfo-unsupported-with-target:" + GenerateUniqueTag(t)
+
+				buildParams := BuildParams{
+					Context:   contextDir,
+					OutputRef: outputRef,
+					Push:      false,
+					Target:    "stage1",
+				}
+
+				container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+				err := runBuild(container, buildParams)
+				Expect(err).ToNot(HaveOccurred())
+
+				exists := fileExistsInOutputImage(container, outputRef, "/usr/share/buildinfo/labels.json")
+				Expect(exists).To(BeFalse(), "Should not have injected /usr/share/buildinfo/labels.json")
+
+				exists2 := fileExistsInOutputImage(container, outputRef, "/root/buildinfo/labels.json")
+				Expect(exists2).To(BeFalse(), "Should not have injected /root/buildinfo/labels.json")
+			})
+
+			t.Run("LabelsWithQuotes", func(t *testing.T) {
+				contextDir := setupTestContext(t)
+
+				writeContainerfile(contextDir, `
+FROM scratch
+
+LABEL with.single.quotes='label with single quotes'
+LABEL with.double.quotes="label with double quotes"
+
+ARG SINGLE_QUOTED_ARG='arg with single quotes'
+ARG DOUBLE_QUOTED_ARG="arg with double quotes"
+
+LABEL unquoted.arg.with.single.quotes=$SINGLE_QUOTED_ARG
+LABEL unquoted.arg.with.double.quotes=$DOUBLE_QUOTED_ARG
+
+LABEL quoted.arg.with.single.quotes="$SINGLE_QUOTED_ARG"
+LABEL quoted.arg.with.double.quotes="$DOUBLE_QUOTED_ARG"
+
+LABEL literal.argname.1='$SINGLE_QUOTED_ARG'
+LABEL literal.argname.2='$DOUBLE_QUOTED_ARG'
+`)
+
+				outputRef := "localhost/test-injecting-buildinfo-labels-with-quotes:" + GenerateUniqueTag(t)
+
+				buildParams := BuildParams{
+					Context:   contextDir,
+					OutputRef: outputRef,
+					Push:      false,
+				}
+
+				container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+				err := runBuild(container, buildParams)
+				Expect(err).ToNot(HaveOccurred())
+
+				imageMeta := getImageMeta(container, outputRef)
+				injectedLabels := getLabelsFromLabelsJson(container, outputRef)
+
+				// The actual labels follow shell expansion rules for quotes
+				Expect(formatAsKeyValuePairs(imageMeta.labels)).To(ContainElements(
+					`with.single.quotes=label with single quotes`,
+					`with.double.quotes=label with double quotes`,
+					`unquoted.arg.with.single.quotes=arg with single quotes`,
+					`unquoted.arg.with.double.quotes=arg with double quotes`,
+					`quoted.arg.with.single.quotes=arg with single quotes`,
+					`quoted.arg.with.double.quotes=arg with double quotes`,
+					`literal.argname.1=$SINGLE_QUOTED_ARG`,
+					`literal.argname.2=$DOUBLE_QUOTED_ARG`,
+				))
+
+				// Quote handling is broken in dockerfile-json, so labels.json is equally broken
+				Expect(formatAsKeyValuePairs(injectedLabels)).To(ContainElements(
+					`with.single.quotes='label with single quotes'`,
+					`with.double.quotes="label with double quotes"`,
+					`unquoted.arg.with.single.quotes='arg with single quotes'`,
+					`unquoted.arg.with.double.quotes="arg with double quotes"`,
+					`quoted.arg.with.single.quotes="'arg with single quotes'"`,
+					`quoted.arg.with.double.quotes=""arg with double quotes""`,
+					`literal.argname.1=''arg with single quotes''`,
+					`literal.argname.2='"arg with double quotes"'`,
+				))
+			})
+		})
+	})
+
+	t.Run("DisinheritLabels", func(t *testing.T) {
+		contextDir := setupTestContext(t)
+
+		writeContainerfile(contextDir, fmt.Sprintf(`
+# Real base image used for an earlier stage
+FROM %s AS stage1
+
+LABEL stage1.label=label-from-stage1
+
+FROM stage1
+
+LABEL final.stage.label=value-gets-overriden
+LABEL final.stage.label=label-from-final-stage
+`, baseImage))
+
+		outputRef := "localhost/test-disinherit-labels:" + GenerateUniqueTag(t)
+
+		buildParams := BuildParams{
+			Context:         contextDir,
+			OutputRef:       outputRef,
+			Push:            false,
+			SourceDateEpoch: "1767225600", // 2026-01-01
+			InheritLabels:   boolptr(false),
+			Labels:          []string{"cli.label=label-from-CLI"},
+		}
+
+		container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+		err := runBuild(container, buildParams)
+		Expect(err).ToNot(HaveOccurred())
+
+		imageMeta := getImageMeta(container, outputRef)
+		Expect(formatAsKeyValuePairs(imageMeta.labels)).To(ConsistOf(
+			"final.stage.label=label-from-final-stage",
+			"cli.label=label-from-CLI",
+			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
+			// And nothing else (hence ConsistOf())
+		))
+
+		injectedLabels := getLabelsFromLabelsJson(container, outputRef)
+		Expect(formatAsKeyValuePairs(injectedLabels)).To(ConsistOf(
+			"final.stage.label=label-from-final-stage",
+			"cli.label=label-from-CLI",
+			"org.opencontainers.image.created=2026-01-01T00:00:00Z",
+			// And nothing else (hence ConsistOf())
+		))
+	})
+
+	t.Run("WithTarget", func(t *testing.T) {
+		contextDir := setupTestContext(t)
+
+		writeContainerfile(contextDir, `
+FROM scratch AS stage1
+
+LABEL stage1.label=label-from-stage1
+LABEL common.label=common-stage1
+
+FROM stage1
+
+LABEL stage2.label=label-from-stage2
+LABEL common.label=common-stage2
+`)
+
+		outputRef := "localhost/test-with-target:" + GenerateUniqueTag(t)
+
+		buildParams := BuildParams{
+			Context:   contextDir,
+			OutputRef: outputRef,
+			Push:      false,
+			Target:    "stage1",
+		}
+
+		container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+		err := runBuild(container, buildParams)
+		Expect(err).ToNot(HaveOccurred())
+
+		imageMeta := getImageMeta(container, outputRef)
+		Expect(imageMeta.labels).To(SatisfyAll(
+			HaveKeyWithValue("stage1.label", "label-from-stage1"),
+			HaveKeyWithValue("common.label", "common-stage1"),
+			Not(HaveKey("stage2.label")),
+		))
 	})
 }

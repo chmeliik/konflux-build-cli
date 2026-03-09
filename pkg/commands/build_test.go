@@ -2,6 +2,7 @@ package commands
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/keilerkonzept/dockerfile-json/pkg/dockerfile"
 	"github.com/konflux-ci/konflux-build-cli/pkg/cliwrappers"
 	"github.com/konflux-ci/konflux-build-cli/testutil"
 	"github.com/moby/buildkit/frontend/dockerfile/instructions"
@@ -861,10 +863,11 @@ func Test_Build_Run(t *testing.T) {
 		c = &Build{
 			CliWrappers: BuildCliWrappers{BuildahCli: _mockBuildahCli},
 			Params: &BuildParams{
-				OutputRef:     "quay.io/org/image:tag",
-				Context:       contextDir,
-				Containerfile: "",
-				Push:          true,
+				OutputRef:      "quay.io/org/image:tag",
+				Context:        contextDir,
+				Containerfile:  "",
+				Push:           true,
+				SkipInjections: true,
 			},
 			ResultsWriter: _mockResultsWriter,
 		}
@@ -962,6 +965,22 @@ func Test_Build_Run(t *testing.T) {
 		g.Expect(isBuildCalled).To(BeTrue())
 	})
 
+	t.Run("should clean up temporary workdir on exit", func(t *testing.T) {
+		beforeEach()
+
+		testutil.WriteFileTree(t, tempDir, map[string]string{
+			"tempWorkdir/file1.txt":             "hello",
+			"tempWorkdir/file2.txt":             "hi",
+			"tempWorkdir/buildinfo/labels.json": "{}",
+		})
+		c.tempWorkdir = filepath.Join(tempDir, "tempWorkdir")
+
+		err := c.Run()
+		g.Expect(err).ToNot(HaveOccurred())
+
+		g.Expect(c.tempWorkdir).ToNot(BeAnExistingFile(), "tempWorkdir should have been deleted")
+	})
+
 	t.Run("should error if build fails", func(t *testing.T) {
 		beforeEach()
 
@@ -1036,10 +1055,11 @@ func Test_Build_Run(t *testing.T) {
 		c := &Build{
 			CliWrappers: BuildCliWrappers{BuildahCli: _mockBuildahCli},
 			Params: &BuildParams{
-				OutputRef:     "quay.io/org/image:tag",
-				Containerfile: "Containerfile",
-				Context:       "context",
-				SecretDirs:    []string{"secrets"},
+				OutputRef:      "quay.io/org/image:tag",
+				Containerfile:  "Containerfile",
+				Context:        "context",
+				SecretDirs:     []string{"secrets"},
+				SkipInjections: true,
 			},
 			ResultsWriter: _mockResultsWriter,
 		}
@@ -1329,4 +1349,117 @@ with.hash.char=this comment # is not a comment
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(MatchRegexp("parsing annotations file: .*annotations.cfg:1: expected arg=value"))
 	})
+}
+
+func Test_Build_splitTransport(t *testing.T) {
+	g := NewWithT(t)
+
+	tests := []struct {
+		input             string
+		expectedTransport string
+		expectedImageRef  string
+	}{
+		// No ref
+		{"", "", ""},
+		// Plain image refs (no transport)
+		{"registry.io/image:tag", "", "registry.io/image:tag"},
+		{"ubuntu:latest", "", "ubuntu:latest"},
+		// Unknown transport (treated the same as no transport, no way to know this isn't a valid image:tag)
+		{"made-up-transport:ubuntu", "", "made-up-transport:ubuntu"},
+		// Known transports
+		{"docker://registry.io/image:tag", "docker://", "registry.io/image:tag"},
+		{"containers-storage:localhost/image:tag", "containers-storage:", "localhost/image:tag"},
+		{"dir:/path/to/dir", "dir:", "/path/to/dir"},
+		{"docker-archive:/path/to/archive.tar", "docker-archive:", "/path/to/archive.tar"},
+		{"docker-daemon:image:tag", "docker-daemon:", "image:tag"},
+		{"oci:/path/to/dir", "oci:", "/path/to/dir"},
+		{"oci-archive:/path/to/archive.tar", "oci-archive:", "/path/to/archive.tar"},
+		{"sif:/path/to/file.sif", "sif:", "/path/to/file.sif"},
+	}
+
+	for _, tc := range tests {
+		testCase := fmt.Sprintf("splitTransport(%q)", tc.input)
+		transport, imageRef := splitTransport(tc.input)
+
+		g.Expect(transport).To(Equal(tc.expectedTransport), testCase)
+		g.Expect(imageRef).To(Equal(tc.expectedImageRef), testCase)
+	}
+}
+
+func Test_Build_shouldInspectImage(t *testing.T) {
+	g := NewWithT(t)
+
+	tests := []struct {
+		input          string
+		expectedResult bool
+	}{
+		// No ref
+		{"", false},
+		// Plain image refs (no transport)
+		{"registry.io/image:tag", true},
+		{"ubuntu:latest", true},
+		// Unknown transport (treated the same as no transport, no way to know this isn't a valid image:tag)
+		{"made-up-transport:ubuntu", true},
+		// Supported transports
+		{"docker://registry.io/image:tag", true},
+		{"containers-storage:localhost/image:tag", true},
+		// Unsupported transports
+		{"dir:/path/to/dir", false},
+		{"docker-archive:/path/to/archive.tar", false},
+		{"docker-daemon:image:tag", false},
+		{"oci:/path/to/dir", false},
+		{"oci-archive:/path/to/archive.tar", false},
+		{"sif:/path/to/file.sif", false},
+	}
+
+	for _, tc := range tests {
+		result := shouldInspectImage(tc.input)
+		g.Expect(result).To(Equal(tc.expectedResult), fmt.Sprintf("shouldInspectImage(%q)", tc.input))
+	}
+}
+
+func Test_Build_injectBuildinfo(t *testing.T) {
+	g := NewWithT(t)
+
+	tempDir := t.TempDir()
+	containerfile := filepath.Join(tempDir, "Containerfile")
+	g.Expect(os.WriteFile(containerfile, []byte("FROM scratch"), 0644)).To(Succeed())
+
+	c := &Build{
+		Params: &BuildParams{
+			// Avoids the BuildahCli.Version() call
+			SourceDateEpoch: "0",
+		},
+		containerfilePath: containerfile,
+	}
+	defer c.cleanup()
+
+	var df *dockerfile.Dockerfile = nil
+	var userLabels []string = nil
+
+	g.Expect(c.injectBuildinfo(df, userLabels)).To(Succeed())
+
+	// Containerfile is copied to tempWorkdir
+	g.Expect(c.containerfileCopyPath).To(HavePrefix(c.tempWorkdir + "/"))
+	g.Expect(filepath.Base(c.containerfileCopyPath)).To(MatchRegexp(`^Containerfile-`))
+	// Original is unchanged
+	originalContent, err := os.ReadFile(c.containerfilePath)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(string(originalContent)).To(Equal("FROM scratch"))
+
+	// COPY appended correctly even though containerfile lacks trailing newline
+	copyContent, err := os.ReadFile(c.containerfileCopyPath)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(string(copyContent)).To(Equal(
+		"FROM scratch\nCOPY --from=.konflux-buildinfo . /usr/share/buildinfo/\n",
+	))
+
+	// labels.json created in tempWorkdir/buildinfo with valid JSON
+	labelsContent, err := os.ReadFile(filepath.Join(c.tempWorkdir, "buildinfo", "labels.json"))
+	g.Expect(string(labelsContent)).To(Equal("{}\n"))
+
+	// buildinfoBuildContext points to the buildinfo dir
+	g.Expect(c.buildinfoBuildContext).NotTo(BeNil())
+	g.Expect(c.buildinfoBuildContext.Name).To(Equal(".konflux-buildinfo"))
+	g.Expect(c.buildinfoBuildContext.Location).To(Equal(filepath.Join(c.tempWorkdir, "buildinfo")))
 }

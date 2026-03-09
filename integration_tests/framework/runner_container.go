@@ -30,6 +30,7 @@ type TestRunnerContainer struct {
 	name       string
 	image      string
 	workdir    string
+	user       string
 	privileged bool
 	env        map[string]string
 	volumes    map[string]string
@@ -105,6 +106,17 @@ func (c *TestRunnerContainer) SetWorkdir(workdir string) {
 func WithWorkdir(workdir string) ContainerOption {
 	return func(c *TestRunnerContainer) {
 		c.SetWorkdir(workdir)
+	}
+}
+
+func (c *TestRunnerContainer) SetUser(user string) {
+	c.ensureContainerNotStarted()
+	c.user = user
+}
+
+func WithUser(user string) ContainerOption {
+	return func(c *TestRunnerContainer) {
+		c.SetUser(user)
 	}
 }
 
@@ -219,6 +231,9 @@ func (c *TestRunnerContainer) Start() error {
 	}
 	if c.workdir != "" {
 		args = append(args, "--workdir", c.workdir)
+	}
+	if c.user != "" {
+		args = append(args, "--user", c.user)
 	}
 	if c.privileged {
 		args = append(args, "--privileged")

@@ -1,6 +1,7 @@
 package cliwrappers
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	l "github.com/konflux-ci/konflux-build-cli/pkg/logger"
+	ociv1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 var buildahLog = l.Logger.WithField("logger", "BuildahCli")
@@ -15,6 +17,10 @@ var buildahLog = l.Logger.WithField("logger", "BuildahCli")
 type BuildahCliInterface interface {
 	Build(args *BuildahBuildArgs) error
 	Push(args *BuildahPushArgs) (string, error)
+	Pull(args *BuildahPullArgs) error
+	Inspect(args *BuildahInspectArgs) (string, error)
+	InspectImage(name string) (BuildahImageInfo, error)
+	Version() (BuildahVersionInfo, error)
 }
 
 var _ BuildahCliInterface = &BuildahCli{}
@@ -43,6 +49,7 @@ type BuildahBuildArgs struct {
 	OutputRef        string
 	Secrets          []BuildahSecret
 	Volumes          []BuildahVolume
+	BuildContexts    []BuildahBuildContext
 	BuildArgs        []string
 	BuildArgsFile    string
 	Envs             []string
@@ -50,7 +57,10 @@ type BuildahBuildArgs struct {
 	Annotations      []string
 	SourceDateEpoch  string
 	RewriteTimestamp bool
-	ExtraArgs        []string
+	// Defaults to true in the CLI, need a way to distinguish between explicitly false and unset
+	InheritLabels *bool
+	Target        string
+	ExtraArgs     []string
 }
 
 type BuildahSecret struct {
@@ -63,6 +73,13 @@ type BuildahVolume struct {
 	HostDir      string
 	ContainerDir string
 	Options      string
+}
+
+// Represents a buildah --build-context argument: name=path
+// (buildah also supports other sources for contexts, but we only support paths for now)
+type BuildahBuildContext struct {
+	Name     string
+	Location string
 }
 
 // Check that the build arguments are valid, e.g. required arguments are set.
@@ -126,6 +143,13 @@ func (args *BuildahBuildArgs) MakePathsAbsolute(baseDir string) error {
 		}
 	}
 
+	for i := range args.BuildContexts {
+		err := ensureAbsolute(&args.BuildContexts[i].Location)
+		if err != nil {
+			return err
+		}
+	}
+
 	if args.BuildArgsFile != "" {
 		err = ensureAbsolute(&args.BuildArgsFile)
 		if err != nil {
@@ -156,6 +180,10 @@ func (b *BuildahCli) Build(args *BuildahBuildArgs) error {
 		buildahArgs = append(buildahArgs, "--volume="+volumeArg)
 	}
 
+	for _, buildcontext := range args.BuildContexts {
+		buildahArgs = append(buildahArgs, "--build-context="+buildcontext.Name+"="+buildcontext.Location)
+	}
+
 	for _, buildArg := range args.BuildArgs {
 		buildahArgs = append(buildahArgs, "--build-arg="+buildArg)
 	}
@@ -182,6 +210,14 @@ func (b *BuildahCli) Build(args *BuildahBuildArgs) error {
 
 	if args.RewriteTimestamp {
 		buildahArgs = append(buildahArgs, "--rewrite-timestamp")
+	}
+
+	if args.InheritLabels != nil {
+		buildahArgs = append(buildahArgs, fmt.Sprintf("--inherit-labels=%t", *args.InheritLabels))
+	}
+
+	if args.Target != "" {
+		buildahArgs = append(buildahArgs, "--target="+args.Target)
 	}
 
 	// Append extra arguments before the context directory
@@ -250,4 +286,120 @@ func (b *BuildahCli) Push(args *BuildahPushArgs) (string, error) {
 
 	digest := strings.TrimSpace(string(content))
 	return digest, nil
+}
+
+type BuildahPullArgs struct {
+	Image string
+}
+
+// Pull an image from the registry to local storage.
+func (b *BuildahCli) Pull(args *BuildahPullArgs) error {
+	if args.Image == "" {
+		return errors.New("image arg is empty")
+	}
+
+	buildahArgs := []string{"pull", args.Image}
+
+	buildahLog.Debugf("Running command:\nbuildah %s", strings.Join(buildahArgs, " "))
+
+	retryer := NewRetryer(func() (string, string, int, error) {
+		return b.Executor.ExecuteWithOutput("buildah", buildahArgs...)
+	}).WithImageRegistryPreset().
+		StopIfOutputContains("unauthorized").
+		StopIfOutputContains("authentication required")
+
+	_, _, _, err := retryer.Run()
+	if err != nil {
+		buildahLog.Errorf("buildah pull failed: %s", err.Error())
+		return err
+	}
+
+	buildahLog.Debug("Pull completed successfully")
+
+	return nil
+}
+
+type BuildahInspectArgs struct {
+	// Name of object to inspect, required
+	Name string
+	// container | image | manifest, required
+	// Note: Buildah does not require this one, but the behavior is not fully specified
+	// if two objects of different Type have the same Name. Make it required to be safe.
+	Type string
+}
+
+func (b *BuildahCli) Inspect(args *BuildahInspectArgs) (string, error) {
+	if args.Name == "" {
+		return "", errors.New("name is empty")
+	}
+	if args.Type == "" {
+		return "", errors.New("type is empty")
+	}
+
+	buildahArgs := []string{"inspect", "--type", args.Type, args.Name}
+
+	buildahLog.Debugf("Running command:\nbuildah %s", strings.Join(buildahArgs, " "))
+
+	stdout, stderr, _, err := b.Executor.Execute("buildah", buildahArgs...)
+	if err != nil {
+		buildahLog.Errorf("buildah inspect failed: %s", err.Error())
+		if stderr != "" {
+			buildahLog.Errorf("stderr:\n%s", stderr)
+		}
+		return "", err
+	}
+
+	return stdout, nil
+}
+
+// The default output of Inspect() for the 'image' Type (a single image, not an image index).
+// Includes a subset of the attributes that buildah returns.
+type BuildahImageInfo struct {
+	OCIv1 ociv1.Image
+}
+
+func (b *BuildahCli) InspectImage(name string) (BuildahImageInfo, error) {
+	jsonOutput, err := b.Inspect(&BuildahInspectArgs{
+		Name: name,
+		Type: "image",
+	})
+	if err != nil {
+		return BuildahImageInfo{}, err
+	}
+
+	var imageInfo BuildahImageInfo
+
+	err = json.Unmarshal([]byte(jsonOutput), &imageInfo)
+	if err != nil {
+		return BuildahImageInfo{}, fmt.Errorf("parsing inspect output: %w", err)
+	}
+
+	return imageInfo, nil
+}
+
+type BuildahVersionInfo struct {
+	Version string `json:"version"`
+}
+
+func (b *BuildahCli) Version() (BuildahVersionInfo, error) {
+	buildahArgs := []string{"version", "--json"}
+
+	buildahLog.Debugf("Running command:\nbuildah %s", strings.Join(buildahArgs, " "))
+
+	stdout, stderr, _, err := b.Executor.Execute("buildah", buildahArgs...)
+	if err != nil {
+		buildahLog.Errorf("buildah version failed: %s", err.Error())
+		if stderr != "" {
+			buildahLog.Errorf("stderr:\n%s", stderr)
+		}
+		return BuildahVersionInfo{}, err
+	}
+
+	var versionInfo BuildahVersionInfo
+	err = json.Unmarshal([]byte(stdout), &versionInfo)
+	if err != nil {
+		return BuildahVersionInfo{}, fmt.Errorf("parsing version output: %w", err)
+	}
+
+	return versionInfo, nil
 }
