@@ -400,6 +400,10 @@ func (c *Build) Run() error {
 		}
 	}
 
+	if err := c.prePullBaseImages(containerfile); err != nil {
+		return err
+	}
+
 	if err := c.buildImage(); err != nil {
 		return err
 	}
@@ -1001,7 +1005,7 @@ func (c *Build) determineFinalLabels(df *dockerfile.Dockerfile, userLabels []str
 
 	// Base image labels
 	if baseImage != "" {
-		if shouldInspectImage(baseImage) {
+		if isPullableImage(baseImage) {
 			baseImageLabels, err := c.getImageLabels(baseImage)
 			if err != nil {
 				return nil, fmt.Errorf("getting base image labels: %w", err)
@@ -1088,7 +1092,7 @@ func getStageLabels(stage *dockerfile.Stage) map[string]string {
 	return labels
 }
 
-// Determine if the image is worth inspecting to find its labels.
+// Determine if we should try to pull the image.
 //
 // A base image in the Containerfile can use any of the container transports [1].
 // We only care about container images from a registry, i.e. those that do not specify
@@ -1099,7 +1103,7 @@ func getStageLabels(stage *dockerfile.Stage) map[string]string {
 // created dynamically during the build) or just aren't a real use case.
 //
 // [1]: https://man.archlinux.org/man/containers-transports.5.en
-func shouldInspectImage(imageRef string) bool {
+func isPullableImage(imageRef string) bool {
 	if imageRef == "" {
 		return false
 	}
@@ -1152,6 +1156,119 @@ func (c *Build) getImageLabels(imageRef string) (map[string]string, error) {
 	}
 
 	return info.OCIv1.Config.Labels, nil
+}
+
+// Pull all images referenced by the target stage and its dependencies.
+// Primarily needed for hermetic builds where network access is disabled,
+// but also useful to ensure image pulls use our retry logic instead of relying on buildah.
+func (c *Build) prePullBaseImages(df *dockerfile.Dockerfile) error {
+	if df == nil || len(df.Stages) == 0 {
+		return nil
+	}
+
+	var targetStage int
+	if c.Params.Target != "" {
+		if idx, ok := resolveStageRef(df.Stages, c.Params.Target); ok {
+			targetStage = idx
+		} else {
+			return fmt.Errorf("target stage %q not found", c.Params.Target)
+		}
+	} else {
+		targetStage = len(df.Stages) - 1
+	}
+
+	for _, image := range c.collectBaseImages(df, targetStage) {
+		if !isPullableImage(image) {
+			l.Logger.Warnf("Skipping pre-pull of %s: unsupported transport", image)
+			continue
+		}
+		l.Logger.Debugf("Pre-pulling base image: %s", image)
+		if err := c.CliWrappers.BuildahCli.Pull(&cliWrappers.BuildahPullArgs{Image: image}); err != nil {
+			return fmt.Errorf("pre-pulling image %s: %w", image, err)
+		}
+	}
+
+	return nil
+}
+
+// Collect all images needed to build the target stage.
+//
+// For all the instructions in the target stage that support a 'from' reference
+// (those being 'FROM <ref>', 'COPY --from=<ref>', 'RUN --mount=from=<ref>'):
+// - If <ref> is an image, collect this image
+// - If <ref> is an earlier stage in the containerfile, also collect images for that stage
+func (c *Build) collectBaseImages(df *dockerfile.Dockerfile, targetStage int) []string {
+	baseImageSet := make(map[string]struct{})
+
+	stagesToProcess := []int{}
+	stagesSeen := make(map[int]struct{})
+
+	enqueue := func(stageIdx int) {
+		if _, seen := stagesSeen[stageIdx]; !seen {
+			stagesSeen[stageIdx] = struct{}{}
+			stagesToProcess = append(stagesToProcess, stageIdx)
+		}
+	}
+	enqueue(targetStage)
+
+	for len(stagesToProcess) > 0 {
+		stageIdx := stagesToProcess[0]
+		stage := df.Stages[stageIdx]
+		stagesToProcess = stagesToProcess[1:]
+
+		if stage.From.Image != nil {
+			baseImageSet[*stage.From.Image] = struct{}{}
+		} else if stage.From.Stage != nil {
+			enqueue(stage.From.Stage.Index)
+		}
+
+		// 'From' refs can only reference earlier stages. If they reference a later stage
+		// (or the same stage in which they appear), buildah treats them as external images.
+		// Note: for FROM instructions, dockerfile-json handles this on its own.
+		precedingStages := df.Stages[:stageIdx]
+
+		for _, ref := range getFromRefsInCommands(stage) {
+			if idx, ok := resolveStageRef(precedingStages, ref); ok {
+				// ref is a stage
+				enqueue(idx)
+			} else {
+				// ref is an image
+				// (the third option is that ref is a --build-context,
+				//  but we don't expose any way to add build contexts)
+				baseImageSet[ref] = struct{}{}
+			}
+		}
+	}
+
+	return slices.Sorted(maps.Keys(baseImageSet))
+}
+
+func resolveStageRef(stages []*dockerfile.Stage, ref string) (int, bool) {
+	for i, stage := range stages {
+		if stage.Name != nil && *stage.Name == ref {
+			return i, true
+		}
+	}
+	if i, err := strconv.Atoi(ref); err == nil && 0 <= i && i < len(stages) {
+		return i, true
+	}
+	return -1, false
+}
+
+// Returns all 'from' references from a stage's commands (COPY --from and RUN --mount=from).
+func getFromRefsInCommands(stage *dockerfile.Stage) []string {
+	var refs []string
+	for _, cmd := range stage.Commands {
+		if copyCmd, ok := cmd.Command.(*instructions.CopyCommand); ok && copyCmd.From != "" {
+			refs = append(refs, copyCmd.From)
+		}
+		for _, mount := range cmd.Mounts {
+			if mount.From != "" {
+				refs = append(refs, mount.From)
+			}
+		}
+	}
+	return refs
 }
 
 func (c *Build) buildImage() error {
