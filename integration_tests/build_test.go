@@ -2134,5 +2134,97 @@ ADD https://1.1.1.1 /cloudflare-1111.html
 				runTest(t, "root")
 			})
 		})
+
+		t.Run("PrePullImages", func(t *testing.T) {
+			SetupGomega(t)
+
+			imageRegistry := setupImageRegistry(t)
+
+			createBaseImage := func(name string, randomDataSize int64, base string) string {
+				imageRef := imageRegistry.GetTestNamespace() + name + ":" + "test"
+
+				err := CreateTestImage(TestImageConfig{
+					ImageRef:       imageRef,
+					BaseImage:      base,
+					RandomDataSize: randomDataSize,
+				})
+				Expect(err).ToNot(HaveOccurred())
+				// Delete the local image right after this function exits,
+				// we want to ensure the build will fail if kbc doesn't pre-pull it
+				defer DeleteLocalImage(imageRef)
+
+				_, err = PushImage(imageRef)
+				Expect(err).ToNot(HaveOccurred())
+
+				return imageRef
+			}
+
+			// Generate new base images for these tests
+			// Adding the random data ensures these are unique => not already present in local storage
+			baseImage1 := createBaseImage("base1", 1024, "scratch")
+			baseImage2 := createBaseImage("base2", 2048, "scratch")
+			baseImage3 := createBaseImage("base3", 4096, "scratch")
+			realBaseImage := createBaseImage("realbase", 8192, baseImage)
+
+			r := strings.NewReplacer(
+				"{baseImage1}", baseImage1,
+				"{baseImage2}", baseImage2,
+				"{baseImage3}", baseImage3,
+				"{realBaseImage}", realBaseImage,
+			)
+
+			contextDir := setupTestContext(t)
+			writeContainerfile(contextDir, r.Replace(`
+FROM {baseImage1} AS base1
+# COPY directly from an image
+COPY --from={baseImage2} /random-data.bin /data/baseImage2.bin
+
+FROM {realBaseImage} AS realbase1
+# COPY from a previous stage
+COPY --from=base1 /random-data.bin     /data/baseImage1.bin
+COPY --from=base1 /data/baseImage2.bin /data/baseImage2.bin
+# Mount directly from an image
+RUN --mount=from={baseImage3},src=/random-data.bin,dst=/tmp/baseImage3.bin \
+	cp /tmp/baseImage3.bin /data/baseImage3.bin
+
+FROM {realBaseImage} AS realbase2
+# Mount from a previous stage
+RUN --mount=from=realbase1,src=/data,dst=/tmp/data \
+	cp -r /tmp/data /data
+
+# Unused stage, skipped by both buildah and our pre-pull logic
+FROM image.does.not/exist:1 AS unused-stage-1
+COPY --from=image.does.not/exist:2 /foo /bar
+
+# FROM a previous stage
+FROM realbase2
+RUN cp /random-data.bin /data/realBaseImage.bin
+`))
+
+			outputRef := "localhost/test-hermetic-pre-pull-images:" + GenerateUniqueTag(t)
+
+			buildParams := BuildParams{
+				Context:   contextDir,
+				OutputRef: outputRef,
+				Push:      false,
+				Hermetic:  true,
+			}
+
+			container := setupBuildContainerWithCleanup(t, buildParams, imageRegistry)
+
+			_, _, err := runBuildWithOutput(container, buildParams)
+			// Main check: no error (would fail without pre-pulling)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Secondary check: verify that the correct base was pulled for each FROM/from
+			// by checking the sizes of the random-data files
+			stdout := runWithMountedOutputImage(container, outputRef, "cd $CONTAINER_ROOT; du -b data/*")
+			Expect(stdout).To(SatisfyAll(
+				ContainSubstring("1024\tdata/baseImage1.bin"),
+				ContainSubstring("2048\tdata/baseImage2.bin"),
+				ContainSubstring("4096\tdata/baseImage3.bin"),
+				ContainSubstring("8192\tdata/realBaseImage.bin"),
+			))
+		})
 	})
 }
