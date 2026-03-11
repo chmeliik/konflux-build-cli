@@ -2135,6 +2135,55 @@ ADD https://1.1.1.1 /cloudflare-1111.html
 			})
 		})
 
+		t.Run("BlocksRunInstructions", func(t *testing.T) {
+			SetupGomega(t)
+
+			contextDir := setupTestContext(t)
+			writeContainerfile(contextDir, fmt.Sprintf(`
+FROM %s
+
+# Try to connect to port 53 on the Google DNS server.
+# Use an IP directly to prove network is unreachable and the failure isn't just broken DNS.
+# (As can happen with e.g. 'BUILDAH_ISOLATION=chroot buildah build --network=none'.)
+RUN if echo > /dev/tcp/8.8.8.8/53; then echo "Has network access!"; exit 1; fi
+`, baseImage))
+
+			runTest := func(t *testing.T, user string) {
+				SetupGomega(t)
+
+				outputRef := "localhost/test-hermetic-blocks-curl:" + GenerateUniqueTag(t)
+
+				buildParams := BuildParams{
+					Context:   contextDir,
+					OutputRef: outputRef,
+					Push:      false,
+					Hermetic:  true,
+				}
+
+				var opts []ContainerOption
+				if user == "root" {
+					opts = append(opts, WithUser("root"), maybeMountContainerStorage(rootStoragePath, "root"))
+				}
+
+				container := setupBuildContainerWithCleanup(t, buildParams, nil, opts...)
+
+				stdout, _, err := runBuildWithOutput(container, buildParams)
+				Expect(err).ToNot(HaveOccurred())
+
+				// kbc prints the build logs to stderr, but we run it via 'podman exec -t',
+				// which prints everything to stdout
+				Expect(stdout).To(ContainSubstring("/dev/tcp/8.8.8.8/53: Network is unreachable"))
+			}
+
+			t.Run("AsNonRoot", func(t *testing.T) {
+				runTest(t, "taskuser")
+			})
+
+			t.Run("AsRoot", func(t *testing.T) {
+				runTest(t, "root")
+			})
+		})
+
 		t.Run("PrePullImages", func(t *testing.T) {
 			SetupGomega(t)
 
