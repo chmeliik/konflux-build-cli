@@ -5,6 +5,8 @@ FROM registry.access.redhat.com/ubi10/go-toolset:1.25@sha256:182645783ad0a0af4a7
 ARG TARGETOS
 ARG TARGETARCH
 
+RUN if curl -I https://google.com; then echo "Has network access!"; exit 1; fi
+
 USER 1001
 
 WORKDIR /workspace
