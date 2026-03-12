@@ -40,6 +40,10 @@ spec:
     value: buildargs.conf
   - name: buildah-format
     value: oci  # want to test annotations, can't do that with docker
+  - name: hermetic
+    value: 'true'
+  - name: prefetch-input
+    value: gomod
   pipelineSpec:
     description: |
       This pipeline is ideal for building multi-arch container images from a Containerfile while maintaining trust after pipeline customization.
