@@ -2184,6 +2184,48 @@ RUN if echo > /dev/tcp/8.8.8.8/53; then echo "Has network access!"; exit 1; fi
 			})
 		})
 
+		t.Run("DoesntBlockLoopback", func(t *testing.T) {
+			contextDir := setupTestContext(t)
+			writeContainerfile(contextDir, fmt.Sprintf(`
+FROM %s
+
+# Try to connect to the UDP port 9 (the discard port).
+# UDP avoids the "Connection refused" that we would get with TCP because nothing is listening.
+RUN echo > /dev/udp/127.0.0.1/9
+`, baseImage))
+
+			runTest := func(t *testing.T, user string) {
+				SetupGomega(t)
+
+				outputRef := "localhost/test-hermetic-loopback:" + GenerateUniqueTag(t)
+
+				buildParams := BuildParams{
+					Context:   contextDir,
+					OutputRef: outputRef,
+					Push:      false,
+					Hermetic:  true,
+				}
+
+				var opts []ContainerOption
+				if user == "root" {
+					opts = append(opts, WithUser("root"), maybeMountContainerStorage(rootStoragePath, "root"))
+				}
+
+				container := setupBuildContainerWithCleanup(t, buildParams, nil, opts...)
+
+				_, _, err := runBuildWithOutput(container, buildParams)
+				Expect(err).ToNot(HaveOccurred())
+			}
+
+			t.Run("AsNonRoot", func(t *testing.T) {
+				runTest(t, "taskuser")
+			})
+
+			t.Run("AsRoot", func(t *testing.T) {
+				runTest(t, "root")
+			})
+		})
+
 		t.Run("PrePullImages", func(t *testing.T) {
 			SetupGomega(t)
 
