@@ -4,7 +4,6 @@ package cliwrappers
 
 import (
 	"errors"
-	"strings"
 
 	"github.com/konflux-ci/konflux-build-cli/pkg/logger"
 )
@@ -79,7 +78,7 @@ func (hc *HermetoCli) FetchDeps(params *HermetoFetchDepsParams) error {
 		params.OutputDir,
 	)
 
-	log.Debugf("Executing hermeto %s", strings.Join(args, " "))
+	log.Debugf("Executing %s", shellJoin("hermeto", args...))
 	_, _, _, err := hc.Executor.Execute(Cmd{Name: "hermeto", Args: args, LogOutput: true})
 	return err
 }
@@ -108,7 +107,7 @@ func (hc *HermetoCli) GenerateEnv(params *HermetoGenerateEnvParams) error {
 		params.Output,
 	}
 
-	log.Debugf("Executing hermeto %s", strings.Join(args, " "))
+	log.Debugf("Executing %s", shellJoin("hermeto", args...))
 	_, _, _, err := hc.Executor.Execute(Cmd{Name: "hermeto", Args: args, LogOutput: true})
 	return err
 }
@@ -131,7 +130,7 @@ func (hc *HermetoCli) InjectFiles(params *HermetoInjectFilesParams) error {
 		params.ForOutputDir,
 	}
 
-	log.Debugf("Executing hermeto %s", strings.Join(args, " "))
+	log.Debugf("Executing %s", shellJoin("hermeto", args...))
 	_, _, _, err := hc.Executor.Execute(Cmd{Name: "hermeto", Args: args, LogOutput: true})
 	return err
 }

@@ -2,7 +2,6 @@ package cliwrappers
 
 import (
 	"fmt"
-	"strings"
 
 	l "github.com/konflux-ci/konflux-build-cli/pkg/logger"
 )
@@ -66,7 +65,7 @@ func (b *OrasCli) Push(args *OrasPushArgs) (string, string, error) {
 	}
 	orasArgs = append(orasArgs, args.DestinationImage, args.FileName)
 
-	orasLog.Debugf("Running command:\noras %s", strings.Join(orasArgs, " "))
+	orasLog.Debugf("Running command:\n%s", shellJoin("oras", orasArgs...))
 
 	stdout, stderr, _, err := b.Executor.Execute(Cmd{Name: "oras", Args: orasArgs, LogOutput: true})
 

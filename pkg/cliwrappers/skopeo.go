@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
-	"strings"
 
 	l "github.com/konflux-ci/konflux-build-cli/pkg/logger"
 )
@@ -80,7 +79,7 @@ func (s *SkopeoCli) Copy(args *SkopeoCopyArgs) error {
 	dockerPrefix := "docker://"
 	scopeoArgs = append(scopeoArgs, dockerPrefix+args.SourceImage, dockerPrefix+args.DestinationImage)
 
-	skopeoLog.Debugf("Running command:\nskopeo %s", strings.Join(scopeoArgs, " "))
+	skopeoLog.Debugf("Running command:\n%s", shellJoin("skopeo", scopeoArgs...))
 
 	retryer := NewRetryer(func() (string, string, int, error) {
 		return s.Executor.Execute(Command("skopeo", scopeoArgs...))
@@ -136,7 +135,7 @@ func (s *SkopeoCli) Inspect(args *SkopeoInspectArgs) (string, error) {
 	dockerPrefix := "docker://"
 	scopeoArgs = append(scopeoArgs, dockerPrefix+args.ImageRef)
 
-	skopeoLog.Debugf("Running command:\nskopeo %s", strings.Join(scopeoArgs, " "))
+	skopeoLog.Debugf("Running command:\n%s", shellJoin("skopeo", scopeoArgs...))
 
 	retryer := NewRetryer(func() (string, string, int, error) {
 		return s.Executor.Execute(Command("skopeo", scopeoArgs...))

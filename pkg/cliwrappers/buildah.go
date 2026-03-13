@@ -240,7 +240,7 @@ func (b *BuildahCli) Build(args *BuildahBuildArgs) error {
 		executable, buildahArgs = args.Wrapper.Wrap(executable, buildahArgs)
 	}
 
-	buildahLog.Debugf("Running command:\n%s %s", executable, strings.Join(buildahArgs, " "))
+	buildahLog.Debugf("Running command:\n%s", shellJoin(executable, buildahArgs...))
 
 	_, _, _, err := b.Executor.Execute(Cmd{
 		Name: executable, Args: buildahArgs,
@@ -282,7 +282,7 @@ func (b *BuildahCli) Push(args *BuildahPushArgs) (string, error) {
 		buildahArgs = append(buildahArgs, args.Destination)
 	}
 
-	buildahLog.Debugf("Running command:\nbuildah %s", strings.Join(buildahArgs, " "))
+	buildahLog.Debugf("Running command:\n%s", shellJoin("buildah", buildahArgs...))
 
 	retryer := NewRetryer(func() (string, string, int, error) {
 		return b.Executor.Execute(Cmd{Name: "buildah", Args: buildahArgs, LogOutput: true})
@@ -319,7 +319,7 @@ func (b *BuildahCli) Pull(args *BuildahPullArgs) error {
 
 	buildahArgs := []string{"pull", args.Image}
 
-	buildahLog.Debugf("Running command:\nbuildah %s", strings.Join(buildahArgs, " "))
+	buildahLog.Debugf("Running command:\n%s", shellJoin("buildah", buildahArgs...))
 
 	retryer := NewRetryer(func() (string, string, int, error) {
 		return b.Executor.Execute(Cmd{Name: "buildah", Args: buildahArgs, LogOutput: true})
@@ -357,7 +357,7 @@ func (b *BuildahCli) Inspect(args *BuildahInspectArgs) (string, error) {
 
 	buildahArgs := []string{"inspect", "--type", args.Type, args.Name}
 
-	buildahLog.Debugf("Running command:\nbuildah %s", strings.Join(buildahArgs, " "))
+	buildahLog.Debugf("Running command:\n%s", shellJoin("buildah", buildahArgs...))
 
 	stdout, stderr, _, err := b.Executor.Execute(Command("buildah", buildahArgs...))
 	if err != nil {
@@ -403,7 +403,7 @@ type BuildahVersionInfo struct {
 func (b *BuildahCli) Version() (BuildahVersionInfo, error) {
 	buildahArgs := []string{"version", "--json"}
 
-	buildahLog.Debugf("Running command:\nbuildah %s", strings.Join(buildahArgs, " "))
+	buildahLog.Debugf("Running command:\n%s", shellJoin("buildah", buildahArgs...))
 
 	stdout, stderr, _, err := b.Executor.Execute(Command("buildah", buildahArgs...))
 	if err != nil {
