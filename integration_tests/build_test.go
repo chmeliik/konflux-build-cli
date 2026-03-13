@@ -1556,7 +1556,15 @@ RUN echo "this instruction also creates an intermediate layer" > /tmp/bar.txt
 			contextDir := setupTestContext(t)
 
 			writeContainerfile(contextDir, fmt.Sprintf(`
-# Real base image used for an earlier stage
+# This stage is unused, because the second stage1 overrides it
+FROM scratch AS stage1
+
+LABEL stage1.label=this-stage-is-unused
+LABEL common.build.label=this-stage-is-unused
+LABEL common.label=this-stage-is-unused
+
+
+# Real base image
 FROM %s AS stage1
 
 LABEL stage1.label=value-gets-overriden
@@ -2054,6 +2062,14 @@ FROM scratch AS stage1
 LABEL stage1.label=label-from-stage1
 LABEL common.label=common-stage1
 
+
+# --target matches the *first* stage with a matching name, so this is skipped
+FROM base.image.does.not/exist:latest AS stage1
+
+LABEL stage1.label=unused-stage
+
+
+# (this is skipped too, the stage is unnamed)
 FROM stage1
 
 LABEL stage2.label=label-from-stage2
@@ -2256,16 +2272,25 @@ RUN echo > /dev/udp/127.0.0.1/9
 			baseImage2 := createBaseImage("base2", 2048, "scratch")
 			baseImage3 := createBaseImage("base3", 4096, "scratch")
 			realBaseImage := createBaseImage("realbase", 8192, baseImage)
+			unusedBaseImage := createBaseImage("unused", 16384, baseImage)
 
 			r := strings.NewReplacer(
 				"{baseImage1}", baseImage1,
 				"{baseImage2}", baseImage2,
 				"{baseImage3}", baseImage3,
 				"{realBaseImage}", realBaseImage,
+				"{unusedBaseImage}", unusedBaseImage,
 			)
 
 			contextDir := setupTestContext(t)
 			writeContainerfile(contextDir, r.Replace(`
+# This base image is "unused" because the second base1 overrides this stage.
+# However, buildah will build *both* of the base1 stages, so we have to pre-pull both of the images.
+FROM {unusedBaseImage} AS base1
+
+RUN echo "the unused stage WAS built"
+
+
 FROM {baseImage1} AS base1
 
 # COPY directly from an image
@@ -2312,14 +2337,17 @@ RUN cp /random-data.bin /data/realBaseImage.bin
 
 			container := setupBuildContainerWithCleanup(t, buildParams, imageRegistry)
 
-			_, _, err := runBuildWithOutput(container, buildParams)
+			stdout, _, err := runBuildWithOutput(container, buildParams)
 			// Main check: no error (would fail without pre-pulling)
 			Expect(err).ToNot(HaveOccurred())
 
-			// Secondary check: verify that the correct base was pulled for each FROM/from
+			// Verify that buildah really did build the unused stage (otherwise we wasted a pull)
+			Expect(stdout).To(ContainSubstring("the unused stage WAS built"))
+
+			// Verify that the correct base was pulled for each FROM/from
 			// by checking the sizes of the random-data files
-			stdout := runWithMountedOutputImage(container, outputRef, "cd $CONTAINER_ROOT; du -b data/*")
-			Expect(stdout).To(SatisfyAll(
+			stdout2 := runWithMountedOutputImage(container, outputRef, "cd $CONTAINER_ROOT; du -b data/*")
+			Expect(stdout2).To(SatisfyAll(
 				ContainSubstring("1024\tdata/baseImage1.bin"),
 				ContainSubstring("2048\tdata/baseImage2.bin"),
 				ContainSubstring("4096\tdata/baseImage3.bin"),

@@ -1168,8 +1168,9 @@ func (c *Build) prePullBaseImages(df *dockerfile.Dockerfile) error {
 
 	var targetStage int
 	if c.Params.Target != "" {
-		if idx, ok := resolveStageRef(df.Stages, c.Params.Target); ok {
-			targetStage = idx
+		if stages, ok := findMatchingStages(df.Stages, c.Params.Target); ok {
+			// buildah's --target matches the first stage with a matching name
+			targetStage = stages[0]
 		} else {
 			return fmt.Errorf("target stage %q not found", c.Params.Target)
 		}
@@ -1203,10 +1204,12 @@ func (c *Build) collectBaseImages(df *dockerfile.Dockerfile, targetStage int) []
 	stagesToProcess := []int{}
 	stagesSeen := make(map[int]struct{})
 
-	enqueue := func(stageIdx int) {
-		if _, seen := stagesSeen[stageIdx]; !seen {
-			stagesSeen[stageIdx] = struct{}{}
-			stagesToProcess = append(stagesToProcess, stageIdx)
+	enqueue := func(stageIndexes ...int) {
+		for _, stageIdx := range stageIndexes {
+			if _, seen := stagesSeen[stageIdx]; !seen {
+				stagesSeen[stageIdx] = struct{}{}
+				stagesToProcess = append(stagesToProcess, stageIdx)
+			}
 		}
 	}
 	enqueue(targetStage)
@@ -1228,9 +1231,10 @@ func (c *Build) collectBaseImages(df *dockerfile.Dockerfile, targetStage int) []
 		precedingStages := df.Stages[:stageIdx]
 
 		for _, ref := range getFromRefsInCommands(stage) {
-			if idx, ok := resolveStageRef(precedingStages, ref); ok {
-				// ref is a stage
-				enqueue(idx)
+			if stages, ok := findMatchingStages(precedingStages, ref); ok {
+				// ref matches one or more stages
+				// buildah builds all matching stages, we have to pre-pull all the images
+				enqueue(stages...)
 			} else {
 				// ref is an image
 				// (the third option is that ref is a --build-context,
@@ -1243,16 +1247,28 @@ func (c *Build) collectBaseImages(df *dockerfile.Dockerfile, targetStage int) []
 	return slices.Sorted(maps.Keys(baseImageSet))
 }
 
-func resolveStageRef(stages []*dockerfile.Stage, ref string) (int, bool) {
+// Given a list of containerfile stages and a string ref, determine if the ref matches any stage(s).
+// If yes, return ({indexes of matching stages}, true).
+//
+// First, look for matching named stages ('FROM ... AS name').
+// If no such stage exists, the ref may be an integer index of a stage - parse it and verify bounds.
+// If ref doesn't match any named stage and isn't a valid integer index, return (nil, false).
+func findMatchingStages(stages []*dockerfile.Stage, ref string) ([]int, bool) {
+	var matchingStages []int
 	for i, stage := range stages {
 		if stage.Name != nil && *stage.Name == ref {
-			return i, true
+			matchingStages = append(matchingStages, i)
 		}
 	}
-	if i, err := strconv.Atoi(ref); err == nil && 0 <= i && i < len(stages) {
-		return i, true
+	if len(matchingStages) > 0 {
+		return matchingStages, true
 	}
-	return -1, false
+
+	if i, err := strconv.Atoi(ref); err == nil && 0 <= i && i < len(stages) {
+		return []int{i}, true
+	}
+
+	return nil, false
 }
 
 // Returns all 'from' references from a stage's commands (COPY --from and RUN --mount=from).
