@@ -1473,15 +1473,15 @@ func Test_Build_injectBuildinfo(t *testing.T) {
 	g.Expect(c.buildinfoBuildContext.Location).To(Equal(filepath.Join(c.tempWorkdir, "buildinfo")))
 }
 
-func Test_resolveStageRef(t *testing.T) {
+func Test_findMatchingStages(t *testing.T) {
 	g := NewWithT(t)
 
 	tests := []struct {
-		name        string
-		dockerfile  string
-		ref         string
-		expectIndex int
-		expectOk    bool
+		name          string
+		dockerfile    string
+		ref           string
+		expectIndexes []int
+		expectOk      bool
 	}{
 		{
 			name: "match stage by name",
@@ -1489,9 +1489,9 @@ func Test_resolveStageRef(t *testing.T) {
 				"FROM golang:1.21 AS builder",
 				"FROM scratch",
 			}, "\n"),
-			ref:         "builder",
-			expectIndex: 0,
-			expectOk:    true,
+			ref:           "builder",
+			expectIndexes: []int{0},
+			expectOk:      true,
 		},
 		{
 			name: "match stage by numeric index",
@@ -1499,23 +1499,23 @@ func Test_resolveStageRef(t *testing.T) {
 				"FROM golang:1.21 AS builder",
 				"FROM scratch",
 			}, "\n"),
-			ref:         "1",
-			expectIndex: 1,
-			expectOk:    true,
+			ref:           "1",
+			expectIndexes: []int{1},
+			expectOk:      true,
 		},
 		{
-			name:        "no match for unknown name",
-			dockerfile:  "FROM golang:1.21 AS builder\n",
-			ref:         "nonexistent",
-			expectIndex: -1,
-			expectOk:    false,
+			name:          "no match for unknown name",
+			dockerfile:    "FROM golang:1.21 AS builder\n",
+			ref:           "nonexistent",
+			expectIndexes: nil,
+			expectOk:      false,
 		},
 		{
-			name:        "no match for negative index",
-			dockerfile:  "FROM golang:1.21\n",
-			ref:         "-1",
-			expectIndex: -1,
-			expectOk:    false,
+			name:          "no match for negative index",
+			dockerfile:    "FROM golang:1.21\n",
+			ref:           "-1",
+			expectIndexes: nil,
+			expectOk:      false,
 		},
 		{
 			name: "no match for index out of range",
@@ -1523,18 +1523,33 @@ func Test_resolveStageRef(t *testing.T) {
 				"FROM golang:1.21 AS builder",
 				"FROM scratch",
 			}, "\n"),
-			ref:         "2",
-			expectIndex: -1,
-			expectOk:    false,
+			ref:           "2",
+			expectIndexes: nil,
+			expectOk:      false,
+		},
+		{
+			name: "duplicate stage names return multiple indexes",
+			dockerfile: strings.Join([]string{
+				"FROM golang:1.21 AS builder",
+				"RUN echo first",
+				"",
+				"FROM alpine:3.18 AS builder",
+				"RUN echo second",
+				"",
+				"FROM scratch",
+			}, "\n"),
+			ref:           "builder",
+			expectIndexes: []int{0, 1},
+			expectOk:      true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			df := parseDockerfile(t, g, tt.dockerfile)
-			idx, ok := resolveStageRef(df.Stages, tt.ref)
+			indexes, ok := findMatchingStages(df.Stages, tt.ref)
 			g.Expect(ok).To(Equal(tt.expectOk), "expected ok=%v", tt.expectOk)
-			g.Expect(idx).To(Equal(tt.expectIndex), "expected index=%d", tt.expectIndex)
+			g.Expect(indexes).To(Equal(tt.expectIndexes), "expected indexes=%v", tt.expectIndexes)
 		})
 	}
 }
@@ -1714,6 +1729,21 @@ func Test_Build_collectBaseImages(t *testing.T) {
 				"alpine:3.18",
 				"golang:1.21",
 			},
+		},
+		{
+			name: "duplicate stage names: all matching stages are included",
+			dockerfile: strings.Join([]string{
+				"FROM imageA AS builder",
+				"RUN echo first",
+				"",
+				"FROM imageB AS builder",
+				"RUN echo second",
+				"",
+				"FROM scratch",
+				"COPY --from=builder /app /app",
+			}, "\n"),
+			targetStage: 2,
+			expected:    []string{"imageA", "imageB"},
 		},
 		{
 			name: "unused stage not reachable from target is excluded",
