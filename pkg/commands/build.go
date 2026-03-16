@@ -236,8 +236,8 @@ type BuildParams struct {
 	AddLegacyLabels            bool     `paramName:"add-legacy-labels"`
 	ContainerfileJsonOutput    string   `paramName:"containerfile-json-output"`
 	SkipInjections             bool     `paramName:"skip-injections"`
-	InheritLabels              bool     `paramName:"inherit-labels"`
 	IncludeLegacyBuildinfoPath bool     `paramName:"include-legacy-buildinfo-path"`
+	InheritLabels              bool     `paramName:"inherit-labels"`
 	Target                     string   `paramName:"target"`
 	Hermetic                   bool     `paramName:"hermetic"`
 	ExtraArgs                  []string // Additional arguments to pass to buildah build
@@ -471,9 +471,6 @@ func (c *Build) logParams() {
 	if c.Params.ImageRevision != "" {
 		l.Logger.Infof("[param] ImageRevision: %s", c.Params.ImageRevision)
 	}
-	if c.Params.QuayImageExpiresAfter != "" {
-		l.Logger.Infof("[param] QuayImageExpiresAfter: %s", c.Params.QuayImageExpiresAfter)
-	}
 	if c.Params.LegacyBuildTimestamp != "" {
 		l.Logger.Infof("[param] LegacyBuildTimestamp: %s", c.Params.LegacyBuildTimestamp)
 	}
@@ -482,6 +479,9 @@ func (c *Build) logParams() {
 	}
 	if c.Params.RewriteTimestamp {
 		l.Logger.Infof("[param] RewriteTimestamp: %t", c.Params.RewriteTimestamp)
+	}
+	if c.Params.QuayImageExpiresAfter != "" {
+		l.Logger.Infof("[param] QuayImageExpiresAfter: %s", c.Params.QuayImageExpiresAfter)
 	}
 	if c.Params.AddLegacyLabels {
 		l.Logger.Infof("[param] AddLegacyLabels: %t", c.Params.AddLegacyLabels)
