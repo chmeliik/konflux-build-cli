@@ -367,7 +367,10 @@ func (c *Build) copyToTempWorkdir(filePath string) (copyPath string, err error) 
 
 // Run executes the command logic.
 func (c *Build) Run() error {
-	c.logParams()
+	common.LogParameters(BuildParamsConfig, c.Params)
+	if len(c.Params.ExtraArgs) > 0 {
+		l.Logger.Infof("[extra args]: %v", c.Params.ExtraArgs)
+	}
 
 	defer c.cleanup()
 
@@ -432,79 +435,6 @@ func (c *Build) Run() error {
 	}
 
 	return nil
-}
-
-func (c *Build) logParams() {
-	if c.Params.Containerfile != "" {
-		l.Logger.Infof("[param] Containerfile: %s", c.Params.Containerfile)
-	}
-	l.Logger.Infof("[param] Context: %s", c.Params.Context)
-	l.Logger.Infof("[param] OutputRef: %s", c.Params.OutputRef)
-	l.Logger.Infof("[param] Push: %t", c.Params.Push)
-	if len(c.Params.SecretDirs) > 0 {
-		l.Logger.Infof("[param] SecretDirs: %v", c.Params.SecretDirs)
-	}
-	if c.Params.WorkdirMount != "" {
-		l.Logger.Infof("[param] WorkdirMount: %s", c.Params.WorkdirMount)
-	}
-	if len(c.Params.BuildArgs) > 0 {
-		l.Logger.Infof("[param] BuildArgs: %v", c.Params.BuildArgs)
-	}
-	if c.Params.BuildArgsFile != "" {
-		l.Logger.Infof("[param] BuildArgsFile: %s", c.Params.BuildArgsFile)
-	}
-	if len(c.Params.Envs) > 0 {
-		l.Logger.Infof("[param] Envs: %v", c.Params.Envs)
-	}
-	if len(c.Params.Labels) > 0 {
-		l.Logger.Infof("[param] Labels: %v", c.Params.Labels)
-	}
-	if len(c.Params.Annotations) > 0 {
-		l.Logger.Infof("[param] Annotations: %v", c.Params.Annotations)
-	}
-	if c.Params.AnnotationsFile != "" {
-		l.Logger.Infof("[param] AnnotationsFile: %s", c.Params.AnnotationsFile)
-	}
-	if c.Params.ImageSource != "" {
-		l.Logger.Infof("[param] ImageSource: %s", c.Params.ImageSource)
-	}
-	if c.Params.ImageRevision != "" {
-		l.Logger.Infof("[param] ImageRevision: %s", c.Params.ImageRevision)
-	}
-	if c.Params.QuayImageExpiresAfter != "" {
-		l.Logger.Infof("[param] QuayImageExpiresAfter: %s", c.Params.QuayImageExpiresAfter)
-	}
-	if c.Params.LegacyBuildTimestamp != "" {
-		l.Logger.Infof("[param] LegacyBuildTimestamp: %s", c.Params.LegacyBuildTimestamp)
-	}
-	if c.Params.SourceDateEpoch != "" {
-		l.Logger.Infof("[param] SourceDateEpoch: %s", c.Params.SourceDateEpoch)
-	}
-	if c.Params.RewriteTimestamp {
-		l.Logger.Infof("[param] RewriteTimestamp: %t", c.Params.RewriteTimestamp)
-	}
-	if c.Params.AddLegacyLabels {
-		l.Logger.Infof("[param] AddLegacyLabels: %t", c.Params.AddLegacyLabels)
-	}
-	if c.Params.ContainerfileJsonOutput != "" {
-		l.Logger.Infof("[param] ContainerfileJsonOutput: %s", c.Params.ContainerfileJsonOutput)
-	}
-	if c.Params.SkipInjections {
-		l.Logger.Infof("[param] SkipInjections: %t", c.Params.SkipInjections)
-	}
-	if c.Params.IncludeLegacyBuildinfoPath {
-		l.Logger.Infof("[param] IncludeLegacyBuildinfoPath: %t", c.Params.IncludeLegacyBuildinfoPath)
-	}
-	// Defaults to true, so log only if false
-	if !c.Params.InheritLabels {
-		l.Logger.Infof("[param] InheritLabels: %t", c.Params.InheritLabels)
-	}
-	if c.Params.Hermetic {
-		l.Logger.Infof("[param] Hermetic: %t", c.Params.Hermetic)
-	}
-	if len(c.Params.ExtraArgs) > 0 {
-		l.Logger.Infof("[param] ExtraArgs: %v", c.Params.ExtraArgs)
-	}
 }
 
 func (c *Build) validateParams() error {
