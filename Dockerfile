@@ -1,3 +1,7 @@
+FROM registry.fedoraproject.org/fedora-minimal:42 AS unused-fedora
+
+RUN echo "Why is this here? Just to ~suffer~ test skip-unused-stages=false?"
+
 # Build the Konflux Build CLI binary.
 # For more details and updates, refer to
 # https://catalog.redhat.com/en/software/containers/rhel10/go-toolset/6707d40f27f63a06f78743c4
