@@ -499,6 +499,9 @@ func (c *Build) logParams() {
 	if !c.Params.InheritLabels {
 		l.Logger.Infof("[param] InheritLabels: %t", c.Params.InheritLabels)
 	}
+	if c.Params.Target != "" {
+		l.Logger.Infof("[param] Target: %s", c.Params.Target)
+	}
 	if c.Params.Hermetic {
 		l.Logger.Infof("[param] Hermetic: %t", c.Params.Hermetic)
 	}
