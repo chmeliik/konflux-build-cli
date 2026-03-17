@@ -17,5 +17,12 @@ comments_location_policy = "both"
 #   1=informational
 inline_comments_severity_threshold = 3
 
+extra_instructions = """
+- Explicitly check for secret leakage via logs/error messages.
+- Keep in mind CLI parameter values are logged automatically unless marked with NoLog.
+  - Remember NoLog only suppresses the value in LogParameters output.
+    It is NOT an auto-redaction mechanism, the parameter value can still leak elsewhere.
+"""
+
 [pr_code_suggestions]
 enable_chat_in_code_suggestions = false

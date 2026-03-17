@@ -1,11 +1,15 @@
 package common
 
 import (
+	"bytes"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 
+	l "github.com/konflux-ci/konflux-build-cli/pkg/logger"
 	. "github.com/onsi/gomega"
+	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
@@ -688,5 +692,221 @@ func TestParseParameters(t *testing.T) {
 		g.Expect(func() {
 			ParseParameters(cmd, paramsConfig, params)
 		}).To(Panic())
+	})
+}
+
+func captureLogOutput(fn func()) string {
+	origOut := l.Logger.Out
+	origFormatter := l.Logger.Formatter
+	origLevel := l.Logger.Level
+
+	var buf bytes.Buffer
+	l.Logger.SetOutput(&buf)
+	l.Logger.SetFormatter(&logrus.TextFormatter{DisableTimestamp: true})
+	l.Logger.SetLevel(logrus.InfoLevel)
+
+	defer func() {
+		l.Logger.SetOutput(origOut)
+		l.Logger.SetFormatter(origFormatter)
+		l.Logger.SetLevel(origLevel)
+	}()
+
+	fn()
+
+	return buf.String()
+}
+
+func TestLogParameters(t *testing.T) {
+	type TestParams struct {
+		RequiredStr string   `paramName:"required-str"`
+		OptionalStr string   `paramName:"optional-str"`
+		Flag        bool     `paramName:"flag"`
+		DefaultTrue bool     `paramName:"default-true"`
+		Count       int      `paramName:"count"`
+		Items       []string `paramName:"items"`
+		SecretStr   string   `paramName:"secret-str"`
+		NoTag       string
+	}
+
+	paramsConfig := map[string]Parameter{
+		"required-str": {
+			Name:     "required-str",
+			TypeKind: reflect.String,
+			Required: true,
+		},
+		"optional-str": {
+			Name:         "optional-str",
+			TypeKind:     reflect.String,
+			DefaultValue: "default-val",
+		},
+		"flag": {
+			Name:         "flag",
+			TypeKind:     reflect.Bool,
+			DefaultValue: "false",
+		},
+		"default-true": {
+			Name:         "default-true",
+			TypeKind:     reflect.Bool,
+			DefaultValue: "true",
+		},
+		"count": {
+			Name:     "count",
+			TypeKind: reflect.Int,
+		},
+		"items": {
+			Name:     "items",
+			TypeKind: reflect.Slice,
+		},
+		"secret-str": {
+			Name:     "secret-str",
+			TypeKind: reflect.String,
+			NoLog:    true,
+		},
+	}
+
+	t.Run("required param is always logged", func(t *testing.T) {
+		g := NewWithT(t)
+		params := &TestParams{RequiredStr: ""}
+		output := captureLogOutput(func() {
+			LogParameters(paramsConfig, params)
+		})
+		g.Expect(output).To(ContainSubstring("[param] required-str: "))
+	})
+
+	t.Run("optional string at zero value is not logged", func(t *testing.T) {
+		g := NewWithT(t)
+		params := &TestParams{OptionalStr: ""}
+		output := captureLogOutput(func() {
+			LogParameters(paramsConfig, params)
+		})
+		g.Expect(output).ToNot(ContainSubstring("optional-str"))
+	})
+
+	t.Run("optional string with value is logged", func(t *testing.T) {
+		g := NewWithT(t)
+		params := &TestParams{OptionalStr: "custom"}
+		output := captureLogOutput(func() {
+			LogParameters(paramsConfig, params)
+		})
+		g.Expect(output).To(ContainSubstring("[param] optional-str: custom"))
+	})
+
+	t.Run("bool at default is not logged", func(t *testing.T) {
+		g := NewWithT(t)
+		params := &TestParams{Flag: false, DefaultTrue: true}
+		output := captureLogOutput(func() {
+			LogParameters(paramsConfig, params)
+		})
+		g.Expect(output).ToNot(ContainSubstring("flag"))
+		g.Expect(output).ToNot(ContainSubstring("default-true"))
+	})
+
+	t.Run("bool changed from default is logged", func(t *testing.T) {
+		g := NewWithT(t)
+		params := &TestParams{Flag: true, DefaultTrue: false}
+		output := captureLogOutput(func() {
+			LogParameters(paramsConfig, params)
+		})
+		g.Expect(output).To(ContainSubstring("[param] flag: true"))
+		g.Expect(output).To(ContainSubstring("[param] default-true: false"))
+	})
+
+	t.Run("int at zero value is not logged", func(t *testing.T) {
+		g := NewWithT(t)
+		params := &TestParams{Count: 0}
+		output := captureLogOutput(func() {
+			LogParameters(paramsConfig, params)
+		})
+		g.Expect(output).ToNot(ContainSubstring("count"))
+	})
+
+	t.Run("non-zero int is logged", func(t *testing.T) {
+		g := NewWithT(t)
+		params := &TestParams{Count: 42}
+		output := captureLogOutput(func() {
+			LogParameters(paramsConfig, params)
+		})
+		g.Expect(output).To(ContainSubstring("[param] count: 42"))
+	})
+
+	t.Run("nil slice is not logged", func(t *testing.T) {
+		g := NewWithT(t)
+		params := &TestParams{Items: nil}
+		output := captureLogOutput(func() {
+			LogParameters(paramsConfig, params)
+		})
+		g.Expect(output).ToNot(ContainSubstring("items"))
+	})
+
+	t.Run("empty slice is not logged", func(t *testing.T) {
+		g := NewWithT(t)
+		params := &TestParams{Items: []string{}}
+		output := captureLogOutput(func() {
+			LogParameters(paramsConfig, params)
+		})
+		g.Expect(output).ToNot(ContainSubstring("items"))
+	})
+
+	t.Run("non-empty slice is logged", func(t *testing.T) {
+		g := NewWithT(t)
+		params := &TestParams{Items: []string{"a", "b"}}
+		output := captureLogOutput(func() {
+			LogParameters(paramsConfig, params)
+		})
+		g.Expect(output).To(ContainSubstring("[param] items: [a b]"))
+	})
+
+	t.Run("field without paramName tag is skipped", func(t *testing.T) {
+		g := NewWithT(t)
+		params := &TestParams{NoTag: "should-not-appear"}
+		output := captureLogOutput(func() {
+			LogParameters(paramsConfig, params)
+		})
+		g.Expect(output).ToNot(ContainSubstring("should-not-appear"))
+	})
+
+	t.Run("NoLog param with non-zero value logs hidden marker", func(t *testing.T) {
+		g := NewWithT(t)
+		params := &TestParams{SecretStr: "super-secret"}
+		output := captureLogOutput(func() {
+			LogParameters(paramsConfig, params)
+		})
+		g.Expect(output).To(ContainSubstring("[param] secret-str: (hidden)"))
+		g.Expect(output).ToNot(ContainSubstring("super-secret"))
+	})
+
+	t.Run("NoLog param with zero value is not logged", func(t *testing.T) {
+		g := NewWithT(t)
+		params := &TestParams{SecretStr: ""}
+		output := captureLogOutput(func() {
+			LogParameters(paramsConfig, params)
+		})
+		g.Expect(output).ToNot(ContainSubstring("secret-str"))
+	})
+
+	t.Run("output follows struct field order", func(t *testing.T) {
+		g := NewWithT(t)
+		params := &TestParams{
+			RequiredStr: "val1",
+			OptionalStr: "custom",
+			Flag:        true,
+			DefaultTrue: false,
+			Count:       7,
+			Items:       []string{"x"},
+			SecretStr:   "super-secret",
+		}
+		output := captureLogOutput(func() {
+			LogParameters(paramsConfig, params)
+		})
+		expected := strings.Join([]string{
+			`level=info msg="[param] required-str: val1"`,
+			`level=info msg="[param] optional-str: custom"`,
+			`level=info msg="[param] flag: true"`,
+			`level=info msg="[param] default-true: false"`,
+			`level=info msg="[param] count: 7"`,
+			`level=info msg="[param] items: [x]"`,
+			`level=info msg="[param] secret-str: (hidden)"`,
+		}, "\n")
+		g.Expect(strings.TrimSpace(output)).To(Equal(expected))
 	})
 }

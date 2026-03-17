@@ -121,6 +121,15 @@ MyCommandParamsConfig = map[string]common.Parameter{
 		Usage:        "Activates some beta feature",
 		DefaultValue: "false",
 	},
+	"secret-value": {
+		Name:       "secret-value",
+		EnvVarName: "KBC_MYCOMMAND_SECRET_VALUE",
+		TypeKind:   reflect.String,
+		Usage:      "A value that may contain secrets",
+		// NoLog suppresses the parameter value in LogParameters output.
+		// Note: this only affects LogParameters, not other log messages.
+		NoLog: true,
+	},
 	// Optional result parameters define file path to which write each result.
 	"result-location": {
 		Name:       "result-location",
@@ -143,6 +152,7 @@ type MyCommandParams struct {
 	Counter   int      `paramName:"count"`
 	ItemArray []string `paramName:"array"`
 	SomeFlag  bool     `paramName:"some-flag"`
+	SecretValue string `paramName:"secret-value"`
 
 	ResultLocation string `paramName:"result-location"`
 	ResultHash     string `paramName:"result-hash"`
@@ -189,11 +199,8 @@ func (c *MyCommand) initCliWrappers() error {
 }
 
 func (c *MyCommand) Run() error {
-	l.Logger.Infof("[param] Resource URL: %s", c.Params.Url)
-	l.Logger.Infof("[param] Counter: %s", c.Params.Counter)
-	if len(c.Params.ItemArray) > 0 {
-		l.Logger.Infof("[param] Items: %s", strings.Join(c.Params.ItemArray, ", "))
-	}
+	// Don't forget to log the params using this common helper
+	common.LogParameters(MyCommandParamsConfig, c.Params)
 
 	if err := c.validateParams(); err != nil {
 		l.Logger.Errorf("error validating parameters: %s", err.Error())

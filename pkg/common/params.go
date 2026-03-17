@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	l "github.com/konflux-ci/konflux-build-cli/pkg/logger"
 	"github.com/spf13/cobra"
 )
 
@@ -19,6 +20,10 @@ type Parameter struct {
 	DefaultValue string // makes no sense if Required is true
 	Usage        string
 	Required     bool
+	// Suppresses the parameter value in LogParameters output.
+	// This is NOT an auto-redaction mechanism - use caution to avoid showing the value
+	// in other log messages, error messages, or anywhere else outside LogParameters.
+	NoLog bool
 }
 
 // RegisterParameters configures Cobra CLI parameters based on given Parameters data.
@@ -248,4 +253,67 @@ func ParseParameters(cmd *cobra.Command, paramsConfig map[string]Parameter, para
 		}
 	}
 	return nil
+}
+
+// LogParameters takes a params struct populated by ParseParameters and logs parameter values.
+// Also needs the paramsConfig map to find parameter info.
+//
+// Logs the user-facing parameter names (from the `paramName` struct tag).
+//
+// Always logs required params.
+// For optional params, decides whether to log as follows:
+// - booleans: log if the value is different than the default
+// - slices, arrays: log if not empty
+// - anything else: log if the value is not the "zero value" for its type
+func LogParameters(paramsConfig map[string]Parameter, params any) {
+	paramsStruct := reflect.ValueOf(params).Elem()
+	paramsStructType := paramsStruct.Type()
+
+	for i := 0; i < paramsStruct.NumField(); i++ {
+		field := paramsStructType.Field(i)
+		tag := field.Tag.Get("paramName")
+		if tag == "" {
+			continue
+		}
+
+		paramData, ok := paramsConfig[tag]
+		if !ok {
+			continue
+		}
+
+		fieldValue := paramsStruct.Field(i)
+
+		if !shouldLog(fieldValue, paramData) {
+			continue
+		}
+
+		if paramData.NoLog {
+			l.Logger.Infof("[param] %s: (hidden)", paramData.Name)
+		} else {
+			l.Logger.Infof("[param] %s: %v", paramData.Name, fieldValue.Interface())
+		}
+	}
+}
+
+func shouldLog(fieldValue reflect.Value, paramData Parameter) bool {
+	if paramData.Required {
+		return true
+	}
+
+	switch fieldValue.Kind() {
+	case reflect.Bool:
+		defaultValue := paramData.DefaultValue
+		if defaultValue == "" {
+			return fieldValue.Bool()
+		}
+		if defBool, err := strconv.ParseBool(defaultValue); err == nil {
+			return fieldValue.Bool() != defBool
+		}
+		// shouldn't be possible to get here, RegisterParameters would have panicked by now
+		return true
+	case reflect.Array, reflect.Slice:
+		return fieldValue.Len() > 0
+	default:
+		return !fieldValue.IsZero()
+	}
 }

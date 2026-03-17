@@ -158,7 +158,7 @@ func (c *PushContainerfile) initCliWrappers() error {
 }
 
 func (c *PushContainerfile) Run() error {
-	c.logParams()
+	common.LogParameters(PushContainerfileParamsConfig, c.Params)
 
 	imageUrl := c.Params.ImageUrl
 	c.imageName = common.GetImageName(imageUrl)
@@ -304,20 +304,4 @@ func (c *PushContainerfile) validateParams() error {
 	}
 
 	return nil
-}
-
-func (c *PushContainerfile) logParams() {
-	l.Logger.Infof("[param] Image URL: %s", c.Params.ImageUrl)
-	l.Logger.Infof("[param] Image digest: %s", c.Params.ImageDigest)
-	l.Logger.Infof("[param] Tag suffix: %s", c.Params.TagSuffix)
-	l.Logger.Infof("[param] Containerfile: %s", c.Params.Containerfile)
-	l.Logger.Infof("[param] Context: %s", c.Params.Context)
-	l.Logger.Infof("[param] Artifact type: %s", c.Params.ArtifactType)
-	l.Logger.Infof("[param] Source directory: %s", c.Params.Source)
-	if c.Params.ResultPathImageRef != "" {
-		l.Logger.Infof("[param] Image Reference result file: %s", c.Params.ResultPathImageRef)
-	}
-	if c.Params.AlternativeFilename != "" {
-		l.Logger.Infof("[param] Alternative file name: %s", c.Params.AlternativeFilename)
-	}
 }

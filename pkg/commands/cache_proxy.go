@@ -107,7 +107,7 @@ func (c *CacheProxy) Run() error {
 	var allowCache string
 	var httpProxy, noProxy string
 
-	c.logParams()
+	common.LogParameters(CacheProxyParamsConfig, c.Params)
 
 	l.Logger.Debug("Reading config data")
 	cacheProxyConfig, err := c.Configs.ConfigReader.ReadConfigData()
@@ -153,14 +153,6 @@ func (c *CacheProxy) Run() error {
 	}
 
 	return nil
-}
-
-func (c *CacheProxy) logParams() {
-	l.Logger.Infof("[param] ENABLE: %s", c.Params.Enable)
-	l.Logger.Infof("[param] DEFAULT HTTP PROXY: %s", c.Params.DefaultHttpProxy)
-	l.Logger.Infof("[param] DEFAULT NO PROXY: %s", c.Params.DefaultNoProxy)
-	l.Logger.Infof("[param] HTTP PROXY RESULT PATH: %s", c.Params.HttpProxyResultPath)
-	l.Logger.Infof("[param] NO PROXY RESULT PATH: %s", c.Params.NoProxyResultPath)
 }
 
 func (c *CacheProxy) logResults() {

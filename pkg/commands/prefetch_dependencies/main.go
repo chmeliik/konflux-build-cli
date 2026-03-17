@@ -35,6 +35,8 @@ func New(cmd *cobra.Command) (*PrefetchDependencies, error) {
 }
 
 func (pd *PrefetchDependencies) Run() error {
+	common.LogParameters(ParamsConfig, pd.Config)
+
 	if err := pd.HermetoCli.Version(); err != nil {
 		return fmt.Errorf("hermeto --version command failed: %w", err)
 	}

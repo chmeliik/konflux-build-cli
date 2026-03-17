@@ -105,7 +105,7 @@ func (c *ApplyTags) initCliWrappers() error {
 
 // Run executes the command logic.
 func (c *ApplyTags) Run() error {
-	c.logParams()
+	common.LogParameters(ApplyTagsParamsConfig, c.Params)
 
 	c.imageName = common.GetImageName(c.Params.ImageUrl)
 	if err := c.validateParams(); err != nil {
@@ -136,17 +136,6 @@ func (c *ApplyTags) Run() error {
 	}
 
 	return nil
-}
-
-func (c *ApplyTags) logParams() {
-	l.Logger.Infof("[param] Image URL: %s", c.Params.ImageUrl)
-	l.Logger.Infof("[param] Image digest: %s", c.Params.Digest)
-	if len(c.Params.NewTags) > 0 {
-		l.Logger.Infof("[param] Tags: %s", strings.Join(c.Params.NewTags, ", "))
-	}
-	if c.Params.LabelWithTags != "" {
-		l.Logger.Infof("[param] image label: %s", c.Params.LabelWithTags)
-	}
 }
 
 // retrieveTagsFromImageLabel fetches list of tags from the given image label.
