@@ -16,3 +16,6 @@ comments_location_policy = "both"
 #   2=remediation_recommended
 #   1=informational
 inline_comments_severity_threshold = 3
+
+[pr_code_suggestions]
+enable_chat_in_code_suggestions = false
