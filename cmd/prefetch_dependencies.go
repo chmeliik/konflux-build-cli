@@ -8,7 +8,7 @@ import (
 	"github.com/konflux-ci/konflux-build-cli/pkg/logger"
 )
 
-var PrefetchDependenciesCmd = &cobra.Command{
+var prefetchDependenciesCmd = &cobra.Command{
 	Use:   "prefetch-dependencies",
 	Short: "Prefetch project dependencies",
 	Long:  "Prefetch project dependencies using Hermeto to enable hermetic container builds",
@@ -26,5 +26,5 @@ var PrefetchDependenciesCmd = &cobra.Command{
 }
 
 func init() {
-	common.RegisterParameters(PrefetchDependenciesCmd, prefetch_dependencies.ParamsConfig)
+	common.RegisterParameters(prefetchDependenciesCmd, prefetch_dependencies.ParamsConfig)
 }
