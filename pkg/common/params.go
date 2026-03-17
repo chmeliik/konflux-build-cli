@@ -20,6 +20,10 @@ type Parameter struct {
 	DefaultValue string // makes no sense if Required is true
 	Usage        string
 	Required     bool
+	// Suppresses the parameter value in LogParameters output.
+	// This is NOT an auto-redaction mechanism - use caution to avoid showing the value
+	// in other log messages, error messages, or anywhere else outside LogParameters.
+	NoLog bool
 }
 
 // RegisterParameters configures Cobra CLI parameters based on given Parameters data.
@@ -283,7 +287,11 @@ func LogParameters(paramsConfig map[string]Parameter, params any) {
 			continue
 		}
 
-		l.Logger.Infof("[param] %s: %v", paramData.Name, fieldValue.Interface())
+		if paramData.NoLog {
+			l.Logger.Infof("[param] %s: (hidden)", paramData.Name)
+		} else {
+			l.Logger.Infof("[param] %s: %v", paramData.Name, fieldValue.Interface())
+		}
 	}
 }
 

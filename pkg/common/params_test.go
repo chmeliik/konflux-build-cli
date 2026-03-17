@@ -724,6 +724,7 @@ func TestLogParameters(t *testing.T) {
 		DefaultTrue bool     `paramName:"default-true"`
 		Count       int      `paramName:"count"`
 		Items       []string `paramName:"items"`
+		SecretStr   string   `paramName:"secret-str"`
 		NoTag       string
 	}
 
@@ -755,6 +756,11 @@ func TestLogParameters(t *testing.T) {
 		"items": {
 			Name:     "items",
 			TypeKind: reflect.Slice,
+		},
+		"secret-str": {
+			Name:     "secret-str",
+			TypeKind: reflect.String,
+			NoLog:    true,
 		},
 	}
 
@@ -859,6 +865,25 @@ func TestLogParameters(t *testing.T) {
 		g.Expect(output).ToNot(ContainSubstring("should-not-appear"))
 	})
 
+	t.Run("NoLog param with non-zero value logs hidden marker", func(t *testing.T) {
+		g := NewWithT(t)
+		params := &TestParams{SecretStr: "super-secret"}
+		output := captureLogOutput(func() {
+			LogParameters(paramsConfig, params)
+		})
+		g.Expect(output).To(ContainSubstring("[param] secret-str: (hidden)"))
+		g.Expect(output).ToNot(ContainSubstring("super-secret"))
+	})
+
+	t.Run("NoLog param with zero value is not logged", func(t *testing.T) {
+		g := NewWithT(t)
+		params := &TestParams{SecretStr: ""}
+		output := captureLogOutput(func() {
+			LogParameters(paramsConfig, params)
+		})
+		g.Expect(output).ToNot(ContainSubstring("secret-str"))
+	})
+
 	t.Run("output follows struct field order", func(t *testing.T) {
 		g := NewWithT(t)
 		params := &TestParams{
@@ -868,6 +893,7 @@ func TestLogParameters(t *testing.T) {
 			DefaultTrue: false,
 			Count:       7,
 			Items:       []string{"x"},
+			SecretStr:   "super-secret",
 		}
 		output := captureLogOutput(func() {
 			LogParameters(paramsConfig, params)
@@ -879,6 +905,7 @@ func TestLogParameters(t *testing.T) {
 			`level=info msg="[param] default-true: false"`,
 			`level=info msg="[param] count: 7"`,
 			`level=info msg="[param] items: [x]"`,
+			`level=info msg="[param] secret-str: (hidden)"`,
 		}, "\n")
 		g.Expect(strings.TrimSpace(output)).To(Equal(expected))
 	})
