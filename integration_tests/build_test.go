@@ -51,6 +51,7 @@ type BuildParams struct {
 	InheritLabels              *bool
 	IncludeLegacyBuildinfoPath bool
 	Target                     string
+	Hermetic                   bool
 	ExtraArgs                  []string
 }
 
@@ -285,6 +286,9 @@ func runBuildWithOutput(container *TestRunnerContainer, buildParams BuildParams)
 	if buildParams.Target != "" {
 		args = append(args, "--target", buildParams.Target)
 	}
+	if buildParams.Hermetic {
+		args = append(args, "--hermetic")
+	}
 	// Add separator and extra args if provided
 	if len(buildParams.ExtraArgs) > 0 {
 		args = append(args, "--")
@@ -503,6 +507,11 @@ func TestBuild(t *testing.T) {
 	t.Cleanup(func() { removeContainerStorageDir(storagePath) })
 	Expect(err).ToNot(HaveOccurred())
 
+	// Need two separate storage dirs, one for tests that run as root, one for non-root
+	rootStoragePath, err := createContainerStorageDir()
+	t.Cleanup(func() { removeContainerStorageDir(rootStoragePath) })
+	Expect(err).ToNot(HaveOccurred())
+
 	defaultOpts := []ContainerOption{WithUser("taskuser"), maybeMountContainerStorage(storagePath, "taskuser")}
 
 	setupBuildContainerWithCleanup := func(
@@ -630,14 +639,8 @@ RUN echo hi
 				Push:      false,
 			}
 
-			// Most other tests run as "taskuser". They may have already taken ownership of the
-			// shared storage dir, so root will not have permissions to write there. Use a new one.
-			storagePath, err := createContainerStorageDir()
-			t.Cleanup(func() { removeContainerStorageDir(storagePath) })
-			Expect(err).ToNot(HaveOccurred())
-
 			container := setupBuildContainerWithCleanup(t, buildParams, nil,
-				WithUser("root"), maybeMountContainerStorage(storagePath, "root"))
+				WithUser("root"), maybeMountContainerStorage(rootStoragePath, "root"))
 
 			err = runBuild(container, buildParams)
 			Expect(err).ToNot(HaveOccurred())
@@ -1553,7 +1556,15 @@ RUN echo "this instruction also creates an intermediate layer" > /tmp/bar.txt
 			contextDir := setupTestContext(t)
 
 			writeContainerfile(contextDir, fmt.Sprintf(`
-# Real base image used for an earlier stage
+# This stage is unused, because the second stage1 overrides it
+FROM scratch AS stage1
+
+LABEL stage1.label=this-stage-is-unused
+LABEL common.build.label=this-stage-is-unused
+LABEL common.label=this-stage-is-unused
+
+
+# Real base image
 FROM %s AS stage1
 
 LABEL stage1.label=value-gets-overriden
@@ -2051,6 +2062,14 @@ FROM scratch AS stage1
 LABEL stage1.label=label-from-stage1
 LABEL common.label=common-stage1
 
+
+# --target matches the *first* stage with a matching name, so this is skipped
+FROM base.image.does.not/exist:latest AS stage1
+
+LABEL stage1.label=unused-stage
+
+
+# (this is skipped too, the stage is unnamed)
 FROM stage1
 
 LABEL stage2.label=label-from-stage2
@@ -2077,5 +2096,252 @@ LABEL common.label=common-stage2
 			HaveKeyWithValue("common.label", "common-stage1"),
 			Not(HaveKey("stage2.label")),
 		))
+	})
+
+	t.Run("Hermetic", func(t *testing.T) {
+		SetupGomega(t)
+
+		t.Run("BlocksAddInstructions", func(t *testing.T) {
+			SetupGomega(t)
+
+			contextDir := setupTestContext(t)
+			writeContainerfile(contextDir, `
+FROM scratch
+
+# Use an IP directly to prove network is unreachable and the failure isn't just broken DNS.
+# (As can happen with e.g. 'BUILDAH_ISOLATION=chroot buildah build --network=none'.)
+ADD https://1.1.1.1 /cloudflare-1111.html
+`)
+
+			runTest := func(t *testing.T, user string) {
+				SetupGomega(t)
+
+				outputRef := "localhost/test-hermetic-blocks-add:" + GenerateUniqueTag(t)
+
+				buildParams := BuildParams{
+					Context:   contextDir,
+					OutputRef: outputRef,
+					Push:      false,
+					Hermetic:  true,
+					// Disable retries for ADD instructions to make the build fail faster
+					ExtraArgs: []string{"--retry=0"},
+				}
+
+				var opts []ContainerOption
+				if user == "root" {
+					opts = append(opts, WithUser("root"), maybeMountContainerStorage(rootStoragePath, "root"))
+				}
+
+				container := setupBuildContainerWithCleanup(t, buildParams, nil, opts...)
+
+				stdout, _, err := runBuildWithOutput(container, buildParams)
+				Expect(err).To(HaveOccurred())
+
+				// kbc prints the error to stderr, but we run it via 'podman exec -t',
+				// which prints everything to stdout
+				Expect(stdout).To(ContainSubstring("dial tcp 1.1.1.1:443: connect: network is unreachable"))
+			}
+
+			t.Run("AsNonRoot", func(t *testing.T) {
+				runTest(t, "taskuser")
+			})
+
+			t.Run("AsRoot", func(t *testing.T) {
+				runTest(t, "root")
+			})
+		})
+
+		t.Run("BlocksRunInstructions", func(t *testing.T) {
+			SetupGomega(t)
+
+			contextDir := setupTestContext(t)
+			writeContainerfile(contextDir, fmt.Sprintf(`
+FROM %s
+
+# Try to connect to port 53 on the Google DNS server.
+# Use an IP directly to prove network is unreachable and the failure isn't just broken DNS.
+# (As can happen with e.g. 'BUILDAH_ISOLATION=chroot buildah build --network=none'.)
+RUN if echo > /dev/tcp/8.8.8.8/53; then echo "Has network access!"; exit 1; fi
+`, baseImage))
+
+			runTest := func(t *testing.T, user string) {
+				SetupGomega(t)
+
+				outputRef := "localhost/test-hermetic-blocks-curl:" + GenerateUniqueTag(t)
+
+				buildParams := BuildParams{
+					Context:   contextDir,
+					OutputRef: outputRef,
+					Push:      false,
+					Hermetic:  true,
+				}
+
+				var opts []ContainerOption
+				if user == "root" {
+					opts = append(opts, WithUser("root"), maybeMountContainerStorage(rootStoragePath, "root"))
+				}
+
+				container := setupBuildContainerWithCleanup(t, buildParams, nil, opts...)
+
+				stdout, _, err := runBuildWithOutput(container, buildParams)
+				Expect(err).ToNot(HaveOccurred())
+
+				// kbc prints the build logs to stderr, but we run it via 'podman exec -t',
+				// which prints everything to stdout
+				Expect(stdout).To(ContainSubstring("/dev/tcp/8.8.8.8/53: Network is unreachable"))
+			}
+
+			t.Run("AsNonRoot", func(t *testing.T) {
+				runTest(t, "taskuser")
+			})
+
+			t.Run("AsRoot", func(t *testing.T) {
+				runTest(t, "root")
+			})
+		})
+
+		t.Run("DoesntBlockLoopback", func(t *testing.T) {
+			contextDir := setupTestContext(t)
+			writeContainerfile(contextDir, fmt.Sprintf(`
+FROM %s
+
+# Try to connect to the UDP port 9 (the discard port).
+# UDP avoids the "Connection refused" that we would get with TCP because nothing is listening.
+RUN echo > /dev/udp/127.0.0.1/9
+`, baseImage))
+
+			runTest := func(t *testing.T, user string) {
+				SetupGomega(t)
+
+				outputRef := "localhost/test-hermetic-loopback:" + GenerateUniqueTag(t)
+
+				buildParams := BuildParams{
+					Context:   contextDir,
+					OutputRef: outputRef,
+					Push:      false,
+					Hermetic:  true,
+				}
+
+				var opts []ContainerOption
+				if user == "root" {
+					opts = append(opts, WithUser("root"), maybeMountContainerStorage(rootStoragePath, "root"))
+				}
+
+				container := setupBuildContainerWithCleanup(t, buildParams, nil, opts...)
+
+				_, _, err := runBuildWithOutput(container, buildParams)
+				Expect(err).ToNot(HaveOccurred())
+			}
+
+			t.Run("AsNonRoot", func(t *testing.T) {
+				runTest(t, "taskuser")
+			})
+
+			t.Run("AsRoot", func(t *testing.T) {
+				runTest(t, "root")
+			})
+		})
+
+		t.Run("PrePullImages", func(t *testing.T) {
+			SetupGomega(t)
+
+			imageRegistry := setupImageRegistry(t)
+
+			createBaseImage := func(name string, randomDataSize int64, base string) string {
+				imageRef := imageRegistry.GetTestNamespace() + name + ":" + "test"
+
+				err := CreateTestImage(TestImageConfig{
+					ImageRef:       imageRef,
+					BaseImage:      base,
+					RandomDataSize: randomDataSize,
+				})
+				Expect(err).ToNot(HaveOccurred())
+				// Delete the local image right after this function exits,
+				// we want to ensure the build will fail if kbc doesn't pre-pull it
+				defer DeleteLocalImage(imageRef)
+
+				_, err = PushImage(imageRef)
+				Expect(err).ToNot(HaveOccurred())
+
+				return imageRef
+			}
+
+			// Generate new base images for these tests
+			// Adding the random data ensures these are unique => not already present in local storage
+			baseImage1 := createBaseImage("base1", 1024, "scratch")
+			baseImage2 := createBaseImage("base2", 2048, "scratch")
+			baseImage3 := createBaseImage("base3", 4096, "scratch")
+			realBaseImage := createBaseImage("realbase", 8192, baseImage)
+			unusedBaseImage := createBaseImage("unused", 16384, baseImage)
+
+			r := strings.NewReplacer(
+				"{baseImage1}", baseImage1,
+				"{baseImage2}", baseImage2,
+				"{baseImage3}", baseImage3,
+				"{realBaseImage}", realBaseImage,
+				"{unusedBaseImage}", unusedBaseImage,
+			)
+
+			contextDir := setupTestContext(t)
+			writeContainerfile(contextDir, r.Replace(`
+# This base image is "unused" because the second base1 overrides this stage.
+# However, buildah will build *both* of the base1 stages, so we have to pre-pull both of the images.
+FROM {unusedBaseImage} AS base1
+RUN echo "the unused stage WAS built"
+
+FROM {baseImage1} AS base1
+# COPY directly from an image
+COPY --from={baseImage2} /random-data.bin /data/baseImage2.bin
+
+FROM {realBaseImage} AS realbase1
+# COPY from a previous stage
+COPY --from=base1 /random-data.bin     /data/baseImage1.bin
+COPY --from=base1 /data/baseImage2.bin /data/baseImage2.bin
+# Mount directly from an image
+RUN --mount=from={baseImage3},src=/random-data.bin,dst=/tmp/baseImage3.bin \
+	cp /tmp/baseImage3.bin /data/baseImage3.bin
+
+FROM {realBaseImage} AS realbase2
+# Mount from a previous stage
+RUN --mount=from=realbase1,src=/data,dst=/tmp/data \
+	cp -r /tmp/data /data
+
+# Unused stage, skipped by both buildah and our pre-pull logic
+FROM image.does.not/exist:1 AS unused-stage-1
+COPY --from=image.does.not/exist:2 /foo /bar
+
+# FROM a previous stage
+FROM realbase2
+RUN cp /random-data.bin /data/realBaseImage.bin
+`))
+
+			outputRef := "localhost/test-hermetic-pre-pull-images:" + GenerateUniqueTag(t)
+
+			buildParams := BuildParams{
+				Context:   contextDir,
+				OutputRef: outputRef,
+				Push:      false,
+				Hermetic:  true,
+			}
+
+			container := setupBuildContainerWithCleanup(t, buildParams, imageRegistry)
+
+			stdout, _, err := runBuildWithOutput(container, buildParams)
+			// Main check: no error (would fail without pre-pulling)
+			Expect(err).ToNot(HaveOccurred())
+
+			// Verify that buildah really did build the unused stage (otherwise we wasted a pull)
+			Expect(stdout).To(ContainSubstring("the unused stage WAS built"))
+
+			// Verify that the correct base was pulled for each FROM/from
+			// by checking the sizes of the random-data files
+			stdout2 := runWithMountedOutputImage(container, outputRef, "cd $CONTAINER_ROOT; du -b data/*")
+			Expect(stdout2).To(SatisfyAll(
+				ContainSubstring("1024\tdata/baseImage1.bin"),
+				ContainSubstring("2048\tdata/baseImage2.bin"),
+				ContainSubstring("4096\tdata/baseImage3.bin"),
+				ContainSubstring("8192\tdata/realBaseImage.bin"),
+			))
+		})
 	})
 }

@@ -61,6 +61,7 @@ type BuildahBuildArgs struct {
 	InheritLabels *bool
 	Target        string
 	ExtraArgs     []string
+	Wrapper       *WrapperCmd
 }
 
 type BuildahSecret struct {
@@ -225,9 +226,14 @@ func (b *BuildahCli) Build(args *BuildahBuildArgs) error {
 	// Context directory must be the last argument
 	buildahArgs = append(buildahArgs, args.ContextDir)
 
-	buildahLog.Debugf("Running command:\nbuildah %s", strings.Join(buildahArgs, " "))
+	executable := "buildah"
+	if args.Wrapper != nil {
+		executable, buildahArgs = args.Wrapper.Wrap(executable, buildahArgs)
+	}
 
-	_, _, _, err := b.Executor.ExecuteWithOutput("buildah", buildahArgs...)
+	buildahLog.Debugf("Running command:\n%s %s", executable, strings.Join(buildahArgs, " "))
+
+	_, _, _, err := b.Executor.ExecuteWithOutput(executable, buildahArgs...)
 	if err != nil {
 		buildahLog.Errorf("buildah build failed: %s", err.Error())
 		return err

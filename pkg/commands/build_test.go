@@ -17,6 +17,15 @@ import (
 	. "github.com/onsi/gomega"
 )
 
+func parseDockerfile(t *testing.T, g Gomega, content string) *dockerfile.Dockerfile {
+	t.Helper()
+	containerfilePath := filepath.Join(t.TempDir(), "Containerfile")
+	os.WriteFile(containerfilePath, []byte(content), 0644)
+	df, err := dockerfile.Parse(containerfilePath)
+	g.Expect(err).ToNot(HaveOccurred())
+	return df
+}
+
 func Test_Build_validateParams(t *testing.T) {
 	g := NewWithT(t)
 
@@ -1386,7 +1395,7 @@ func Test_Build_splitTransport(t *testing.T) {
 	}
 }
 
-func Test_Build_shouldInspectImage(t *testing.T) {
+func Test_Build_isPullableImage(t *testing.T) {
 	g := NewWithT(t)
 
 	tests := []struct {
@@ -1413,7 +1422,7 @@ func Test_Build_shouldInspectImage(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		result := shouldInspectImage(tc.input)
+		result := isPullableImage(tc.input)
 		g.Expect(result).To(Equal(tc.expectedResult), fmt.Sprintf("shouldInspectImage(%q)", tc.input))
 	}
 }
@@ -1462,4 +1471,309 @@ func Test_Build_injectBuildinfo(t *testing.T) {
 	g.Expect(c.buildinfoBuildContext).NotTo(BeNil())
 	g.Expect(c.buildinfoBuildContext.Name).To(Equal(".konflux-buildinfo"))
 	g.Expect(c.buildinfoBuildContext.Location).To(Equal(filepath.Join(c.tempWorkdir, "buildinfo")))
+}
+
+func Test_findMatchingStages(t *testing.T) {
+	g := NewWithT(t)
+
+	tests := []struct {
+		name          string
+		dockerfile    string
+		ref           string
+		expectIndexes []int
+		expectOk      bool
+	}{
+		{
+			name: "match stage by name",
+			dockerfile: strings.Join([]string{
+				"FROM golang:1.21 AS builder",
+				"FROM scratch",
+			}, "\n"),
+			ref:           "builder",
+			expectIndexes: []int{0},
+			expectOk:      true,
+		},
+		{
+			name: "match stage by numeric index",
+			dockerfile: strings.Join([]string{
+				"FROM golang:1.21 AS builder",
+				"FROM scratch",
+			}, "\n"),
+			ref:           "1",
+			expectIndexes: []int{1},
+			expectOk:      true,
+		},
+		{
+			name:          "no match for unknown name",
+			dockerfile:    "FROM golang:1.21 AS builder\n",
+			ref:           "nonexistent",
+			expectIndexes: nil,
+			expectOk:      false,
+		},
+		{
+			name:          "no match for negative index",
+			dockerfile:    "FROM golang:1.21\n",
+			ref:           "-1",
+			expectIndexes: nil,
+			expectOk:      false,
+		},
+		{
+			name: "no match for index out of range",
+			dockerfile: strings.Join([]string{
+				"FROM golang:1.21 AS builder",
+				"FROM scratch",
+			}, "\n"),
+			ref:           "2",
+			expectIndexes: nil,
+			expectOk:      false,
+		},
+		{
+			name: "duplicate stage names return multiple indexes",
+			dockerfile: strings.Join([]string{
+				"FROM golang:1.21 AS builder",
+				"RUN echo first",
+				"",
+				"FROM alpine:3.18 AS builder",
+				"RUN echo second",
+				"",
+				"FROM scratch",
+			}, "\n"),
+			ref:           "builder",
+			expectIndexes: []int{0, 1},
+			expectOk:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			df := parseDockerfile(t, g, tt.dockerfile)
+			indexes, ok := findMatchingStages(df.Stages, tt.ref)
+			g.Expect(ok).To(Equal(tt.expectOk), "expected ok=%v", tt.expectOk)
+			g.Expect(indexes).To(Equal(tt.expectIndexes), "expected indexes=%v", tt.expectIndexes)
+		})
+	}
+}
+
+func Test_Build_collectBaseImages(t *testing.T) {
+	g := NewWithT(t)
+
+	tests := []struct {
+		name        string
+		dockerfile  string
+		targetStage int
+		expected    []string
+	}{
+		{
+			name: "FROM scratch returns empty",
+			dockerfile: strings.Join([]string{
+				"FROM scratch",
+				"LABEL foo=bar",
+			}, "\n"),
+			targetStage: 0,
+			expected:    []string{},
+		},
+		{
+			name: "single FROM image",
+			dockerfile: strings.Join([]string{
+				"FROM golang:1.21",
+				"RUN echo hello",
+			}, "\n"),
+			targetStage: 0,
+			expected:    []string{"golang:1.21"},
+		},
+		{
+			name: "COPY --from=stageName",
+			dockerfile: strings.Join([]string{
+				"FROM golang:1.21 AS builder",
+				"RUN echo build",
+				"",
+				"FROM registry.access.redhat.com/ubi9/ubi-minimal:latest",
+				"COPY --from=builder /app /app",
+			}, "\n"),
+			targetStage: 1,
+			expected: []string{
+				"golang:1.21",
+				"registry.access.redhat.com/ubi9/ubi-minimal:latest",
+			},
+		},
+		{
+			name: "COPY --from=stageIndex",
+			dockerfile: strings.Join([]string{
+				"FROM golang:1.21",
+				"RUN echo build",
+				"",
+				"FROM registry.access.redhat.com/ubi9/ubi-minimal:latest",
+				"COPY --from=0 /app /app",
+			}, "\n"),
+			targetStage: 1,
+			expected: []string{
+				"golang:1.21",
+				"registry.access.redhat.com/ubi9/ubi-minimal:latest",
+			},
+		},
+		{
+			name: "COPY --from=externalImage",
+			dockerfile: strings.Join([]string{
+				"FROM golang:1.21",
+				"COPY --from=busybox:latest /bin/sh /bin/sh",
+			}, "\n"),
+			targetStage: 0,
+			expected:    []string{"busybox:latest", "golang:1.21"},
+		},
+		{
+			name: "RUN --mount=from=stageName",
+			dockerfile: strings.Join([]string{
+				"FROM golang:1.21 AS builder",
+				"RUN echo build",
+				"",
+				"FROM alpine:3.18",
+				"RUN --mount=type=bind,from=builder,source=/app,target=/app echo hello",
+			}, "\n"),
+			targetStage: 1,
+			expected: []string{
+				"alpine:3.18",
+				"golang:1.21",
+			},
+		},
+		{
+			name: "RUN --mount=from=stageIndex",
+			dockerfile: strings.Join([]string{
+				"FROM golang:1.21 AS builder",
+				"RUN echo build",
+				"",
+				"FROM alpine:3.18",
+				"RUN --mount=type=bind,from=0,src=/app,dst=/app echo hello",
+			}, "\n"),
+			targetStage: 1,
+			expected: []string{
+				"alpine:3.18",
+				"golang:1.21",
+			},
+		},
+		{
+			name: "RUN --mount=from=externalImage",
+			dockerfile: strings.Join([]string{
+				"FROM golang:1.21",
+				"RUN --mount=type=cache,from=registry.example.com/cache:latest,target=/cache echo cached",
+			}, "\n"),
+			targetStage: 0,
+			expected: []string{
+				"golang:1.21",
+				"registry.example.com/cache:latest",
+			},
+		},
+		{
+			name: "diamond dependency deduplicates shared base",
+			dockerfile: strings.Join([]string{
+				"FROM golang:1.21 AS shared-base",
+				"RUN echo base",
+				"",
+				"FROM alpine:3.18 AS builder-a",
+				"RUN --mount=from=shared-base,src=/app,dst=/app echo a",
+				"",
+				"FROM rust:1.70 AS builder-b",
+				"RUN --mount=from=shared-base,src=/app,dst=/app echo b",
+				"",
+				"FROM scratch",
+				"COPY --from=builder-a /a /a",
+				"COPY --from=builder-b /b /b",
+			}, "\n"),
+			targetStage: 3,
+			expected: []string{
+				"alpine:3.18",
+				"golang:1.21",
+				"rust:1.70",
+			},
+		},
+		{
+			name: "COPY --from= reference to later stage treated as image",
+			dockerfile: strings.Join([]string{
+				"FROM alpine:3.18 AS builder",
+				// The "AS later" stage doesn't exist yet, treat 'later' as an image
+				"COPY --from=later /x /x",
+				"",
+				"FROM builder AS later",
+				"RUN echo hi",
+			}, "\n"),
+			targetStage: 1,
+			expected:    []string{"alpine:3.18", "later"},
+		},
+		{
+			name: "FROM reference to later stage treated as image",
+			dockerfile: strings.Join([]string{
+				// The "AS later" stage doesn't exist yet, treat 'later' as an image
+				"FROM later",
+				"RUN echo hi",
+				"",
+				"FROM golang:1.21 AS later",
+				// This 'later' refers to stage 0, not the current stage
+				"COPY --from=later /app /app",
+			}, "\n"),
+			targetStage: 1,
+			expected:    []string{"golang:1.21", "later"},
+		},
+		{
+			name: "target stage is not the last stage",
+			dockerfile: strings.Join([]string{
+				"FROM golang:1.21 AS builder",
+				"RUN echo build",
+				"",
+				"FROM alpine:3.18",
+				"COPY --from=builder /app /app",
+				"",
+				"FROM ubuntu:22.04",
+				"RUN echo other",
+			}, "\n"),
+			targetStage: 1,
+			expected: []string{
+				"alpine:3.18",
+				"golang:1.21",
+			},
+		},
+		{
+			name: "duplicate stage names: all matching stages are included",
+			dockerfile: strings.Join([]string{
+				"FROM imageA AS builder",
+				"RUN echo first",
+				"",
+				"FROM imageB AS builder",
+				"RUN echo second",
+				"",
+				"FROM scratch",
+				"COPY --from=builder /app /app",
+			}, "\n"),
+			targetStage: 2,
+			expected:    []string{"imageA", "imageB"},
+		},
+		{
+			name: "unused stage not reachable from target is excluded",
+			dockerfile: strings.Join([]string{
+				"FROM golang:1.21 AS builder",
+				"RUN echo build",
+				"",
+				"FROM rust:1.70 AS unused",
+				"RUN echo unused",
+				"",
+				"FROM alpine:3.18",
+				"COPY --from=builder /app /app",
+			}, "\n"),
+			targetStage: 2,
+			expected: []string{
+				"alpine:3.18",
+				"golang:1.21",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			df := parseDockerfile(t, g, tt.dockerfile)
+			result := (&Build{}).collectBaseImages(df, tt.targetStage)
+			if len(tt.expected) == 0 {
+				g.Expect(result).To(BeEmpty())
+			} else {
+				g.Expect(result).To(Equal(tt.expected))
+			}
+		})
+	}
 }

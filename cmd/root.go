@@ -51,4 +51,5 @@ func init() {
 	rootCmd.AddCommand(imageCmd)
 	rootCmd.AddCommand(PrefetchDependenciesCmd)
 	rootCmd.AddCommand(configCmd)
+	rootCmd.AddCommand(internalCmdGroup)
 }

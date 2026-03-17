@@ -204,6 +204,14 @@ var BuildParamsConfig = map[string]common.Parameter{
 		TypeKind:   reflect.String,
 		Usage:      "Target stage in the Containerfile to build. By default, the target stage is the last stage.",
 	},
+	"hermetic": {
+		Name:         "hermetic",
+		ShortName:    "",
+		EnvVarName:   "KBC_BUILD_HERMETIC",
+		TypeKind:     reflect.Bool,
+		DefaultValue: "false",
+		Usage:        "Prevent network access while building the containerfile.",
+	},
 }
 
 type BuildParams struct {
@@ -231,11 +239,15 @@ type BuildParams struct {
 	InheritLabels              bool     `paramName:"inherit-labels"`
 	IncludeLegacyBuildinfoPath bool     `paramName:"include-legacy-buildinfo-path"`
 	Target                     string   `paramName:"target"`
+	Hermetic                   bool     `paramName:"hermetic"`
 	ExtraArgs                  []string // Additional arguments to pass to buildah build
 }
 
 type BuildCliWrappers struct {
-	BuildahCli cliWrappers.BuildahCliInterface
+	BuildahCli          cliWrappers.BuildahCliInterface
+	BuildahUnshare      cliWrappers.WrapperCmd
+	Unshare             cliWrappers.WrapperCmd
+	SelfInUserNamespace cliWrappers.WrapperCmd
 }
 
 type BuildResults struct {
@@ -298,6 +310,17 @@ func (c *Build) initCliWrappers() error {
 		return err
 	}
 	c.CliWrappers.BuildahCli = buildahCli
+
+	c.CliWrappers.BuildahUnshare = cliWrappers.NewWrapperCmd("buildah", "unshare")
+
+	c.CliWrappers.Unshare = cliWrappers.NewWrapperCmd("unshare")
+
+	selfPath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	c.CliWrappers.SelfInUserNamespace = cliWrappers.NewWrapperCmd(selfPath, "internal", "in-user-namespace")
+
 	return nil
 }
 
@@ -375,6 +398,10 @@ func (c *Build) Run() error {
 		} else if err := c.injectBuildinfo(containerfile, c.mergedLabels); err != nil {
 			return fmt.Errorf("injecting buildinfo metadata: %w", err)
 		}
+	}
+
+	if err := c.prePullBaseImages(containerfile); err != nil {
+		return err
 	}
 
 	if err := c.buildImage(); err != nil {
@@ -471,6 +498,9 @@ func (c *Build) logParams() {
 	// Defaults to true, so log only if false
 	if !c.Params.InheritLabels {
 		l.Logger.Infof("[param] InheritLabels: %t", c.Params.InheritLabels)
+	}
+	if c.Params.Hermetic {
+		l.Logger.Infof("[param] Hermetic: %t", c.Params.Hermetic)
 	}
 	if len(c.Params.ExtraArgs) > 0 {
 		l.Logger.Infof("[param] ExtraArgs: %v", c.Params.ExtraArgs)
@@ -975,7 +1005,7 @@ func (c *Build) determineFinalLabels(df *dockerfile.Dockerfile, userLabels []str
 
 	// Base image labels
 	if baseImage != "" {
-		if shouldInspectImage(baseImage) {
+		if isPullableImage(baseImage) {
 			baseImageLabels, err := c.getImageLabels(baseImage)
 			if err != nil {
 				return nil, fmt.Errorf("getting base image labels: %w", err)
@@ -1062,7 +1092,7 @@ func getStageLabels(stage *dockerfile.Stage) map[string]string {
 	return labels
 }
 
-// Determine if the image is worth inspecting to find its labels.
+// Determine if we should try to pull the image.
 //
 // A base image in the Containerfile can use any of the container transports [1].
 // We only care about container images from a registry, i.e. those that do not specify
@@ -1073,7 +1103,7 @@ func getStageLabels(stage *dockerfile.Stage) map[string]string {
 // created dynamically during the build) or just aren't a real use case.
 //
 // [1]: https://man.archlinux.org/man/containers-transports.5.en
-func shouldInspectImage(imageRef string) bool {
+func isPullableImage(imageRef string) bool {
 	if imageRef == "" {
 		return false
 	}
@@ -1128,6 +1158,135 @@ func (c *Build) getImageLabels(imageRef string) (map[string]string, error) {
 	return info.OCIv1.Config.Labels, nil
 }
 
+// Pull all images referenced by the target stage and its dependencies.
+// Primarily needed for hermetic builds where network access is disabled,
+// but also useful to ensure image pulls use our retry logic instead of relying on buildah.
+func (c *Build) prePullBaseImages(df *dockerfile.Dockerfile) error {
+	if df == nil || len(df.Stages) == 0 {
+		return nil
+	}
+
+	var targetStage int
+	if c.Params.Target != "" {
+		if stages, ok := findMatchingStages(df.Stages, c.Params.Target); ok {
+			// buildah's --target matches the first stage with a matching name
+			targetStage = stages[0]
+		} else {
+			return fmt.Errorf("target stage %q not found", c.Params.Target)
+		}
+	} else {
+		targetStage = len(df.Stages) - 1
+	}
+
+	for _, image := range c.collectBaseImages(df, targetStage) {
+		if !isPullableImage(image) {
+			l.Logger.Warnf("Skipping pre-pull of %s: unsupported transport", image)
+			continue
+		}
+		l.Logger.Debugf("Pre-pulling base image: %s", image)
+		if err := c.CliWrappers.BuildahCli.Pull(&cliWrappers.BuildahPullArgs{Image: image}); err != nil {
+			return fmt.Errorf("pre-pulling image %s: %w", image, err)
+		}
+	}
+
+	return nil
+}
+
+// Collect all images needed to build the target stage.
+//
+// For all the instructions in the target stage that support a 'from' reference
+// (those being 'FROM <ref>', 'COPY --from=<ref>', 'RUN --mount=from=<ref>'):
+// - If <ref> is an image, collect this image
+// - If <ref> is an earlier stage in the containerfile, also collect images for that stage
+func (c *Build) collectBaseImages(df *dockerfile.Dockerfile, targetStage int) []string {
+	baseImageSet := make(map[string]struct{})
+
+	stagesToProcess := []int{}
+	stagesSeen := make(map[int]struct{})
+
+	enqueue := func(stageIndexes ...int) {
+		for _, stageIdx := range stageIndexes {
+			if _, seen := stagesSeen[stageIdx]; !seen {
+				stagesSeen[stageIdx] = struct{}{}
+				stagesToProcess = append(stagesToProcess, stageIdx)
+			}
+		}
+	}
+	enqueue(targetStage)
+
+	for len(stagesToProcess) > 0 {
+		stageIdx := stagesToProcess[0]
+		stage := df.Stages[stageIdx]
+		stagesToProcess = stagesToProcess[1:]
+
+		if stage.From.Image != nil {
+			baseImageSet[*stage.From.Image] = struct{}{}
+		} else if stage.From.Stage != nil {
+			enqueue(stage.From.Stage.Index)
+		}
+
+		// 'From' refs can only reference earlier stages. If they reference a later stage
+		// (or the same stage in which they appear), buildah treats them as external images.
+		// Note: for FROM instructions, dockerfile-json handles this on its own.
+		precedingStages := df.Stages[:stageIdx]
+
+		for _, ref := range getFromRefsInCommands(stage) {
+			if stages, ok := findMatchingStages(precedingStages, ref); ok {
+				// ref matches one or more stages
+				// buildah builds all matching stages, we have to pre-pull all the images
+				enqueue(stages...)
+			} else {
+				// ref is an image
+				// (the third option is that ref is a --build-context,
+				//  but we don't expose any way to add build contexts)
+				baseImageSet[ref] = struct{}{}
+			}
+		}
+	}
+
+	return slices.Sorted(maps.Keys(baseImageSet))
+}
+
+// Given a list of containerfile stages and a string ref, determine if the ref matches any stage(s).
+// If yes, return ({indexes of matching stages}, true).
+//
+// First, look for matching named stages ('FROM ... AS name').
+// If no such stage exists, the ref may be an integer index of a stage - parse it and verify bounds.
+// If ref doesn't match any named stage and isn't a valid integer index, return (nil, false).
+func findMatchingStages(stages []*dockerfile.Stage, ref string) ([]int, bool) {
+	var matchingStages []int
+	for i, stage := range stages {
+		if stage.Name != nil && *stage.Name == ref {
+			matchingStages = append(matchingStages, i)
+		}
+	}
+	if len(matchingStages) > 0 {
+		return matchingStages, true
+	}
+
+	if i, err := strconv.Atoi(ref); err == nil && 0 <= i && i < len(stages) {
+		return []int{i}, true
+	}
+
+	return nil, false
+}
+
+// Returns all 'from' references from a stage's commands (COPY --from and RUN --mount=from).
+func getFromRefsInCommands(stage *dockerfile.Stage) []string {
+	var refs []string
+	for _, cmd := range stage.Commands {
+		if copyCmd, ok := cmd.Command.(*instructions.CopyCommand); ok && copyCmd.From != "" {
+			refs = append(refs, copyCmd.From)
+		}
+		for _, mount := range cmd.Mounts {
+			if mount.From != "" {
+				refs = append(refs, mount.From)
+			}
+		}
+	}
+	return refs
+}
+
 func (c *Build) buildImage() error {
 	l.Logger.Info("Building container image...")
 
@@ -1160,6 +1319,7 @@ func (c *Build) buildImage() error {
 		ExtraArgs:        c.Params.ExtraArgs,
 		InheritLabels:    &c.Params.InheritLabels,
 		Target:           c.Params.Target,
+		Wrapper:          c.chooseBuildahWrappers(),
 	}
 	if c.Params.WorkdirMount != "" {
 		buildArgs.Volumes = []cliWrappers.BuildahVolume{
@@ -1180,6 +1340,60 @@ func (c *Build) buildImage() error {
 
 	l.Logger.Info("Build completed successfully")
 	return nil
+}
+
+// Choose how to wrap the 'buildah build' command.
+//
+// Rather than executing buildah directly, we wrap it in commands that manipulate user namespaces.
+// These are the main reasons:
+//
+//  1. Hermetic builds
+//
+//     We want the build to be executed entirely without network access, including ADD instructions.
+//     Buildah has a --network=none flag, but it only affects RUN instructions, not ADD.
+//     And it doesn't work with BUILDAH_ISOLATION=chroot, which is the typical setup in Konflux.
+//     Instead, we create a network namespace manually using 'unshare --net'.
+//
+//  2. Running as root with BUILDAH_ISOLATION=chroot
+//
+//     When running as root, chroot isolation skips creating a user namespace,
+//     so the root inside the container build is the actual root from the host.
+//     Creating a user namespace manually slightly improves security.
+func (c *Build) chooseBuildahWrappers() *cliWrappers.WrapperCmd {
+	var wrapper cliWrappers.WrapperCmd
+
+	if os.Getuid() == 0 {
+		// 'buildah unshare' doesn't work as root, use regular unshare.
+		// --map-root-user: Need to stay root, by default unshare would map to a non-root UID.
+		// --map-auto: Map subordinate UIDs and GIDs based on /etc/subuid and /etc/subgid.
+		//             By default, the namespace would only have 1 UID available.
+		//             Buildah needs more UIDs available to manipulate container filesystems.
+		// --mount: Create a new mount namespace.
+		//          Without this, buildah would fail to mount /var/lib/containers/storage/overlay.
+		wrapper = c.CliWrappers.Unshare.WithArgs("--map-root-user", "--map-auto", "--mount")
+	} else {
+		// Buildah doesn't work under regular unshare as non-root, use 'buildah unshare'.
+		// It does mostly the same things as the raw unshare that we use for root,
+		// but also some buildah-specific magic that makes it work rootless. E.g. this:
+		// https://github.com/containers/storage/blob/83cf57466529353aced8f1803f2302698e0b5cb7/pkg/unshare/unshare_linux.go#L462-L465
+
+		// Unlike the root case, 'buildah unshare' doesn't provide any meaningful security benefits;
+		// buildah always creates a userns for non-root users.
+		// But becoming root in this outer namespace is necessary for 'unshare --net' to work.
+		wrapper = c.CliWrappers.BuildahUnshare
+	}
+
+	if c.Params.Hermetic {
+		wrapper = cliWrappers.JoinWrappers(
+			wrapper,
+			// Create an isolated network namespace
+			c.CliWrappers.Unshare.WithArgs("--net"),
+			// But bring up the loopback interface inside this namespace.
+			// Mainly needed for Bazel builds, Bazel runs a server on localhost.
+			c.CliWrappers.SelfInUserNamespace.WithArgs("--loopback-up"))
+	}
+
+	return &wrapper
 }
 
 func (c *Build) pushImage() (string, error) {
