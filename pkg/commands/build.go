@@ -671,6 +671,9 @@ func (c *Build) processSecretDirs(secretDirs []secretDir) ([]cliWrappers.Buildah
 				buildahSecrets, cliWrappers.BuildahSecret{Src: secretPath, Id: fullID},
 			)
 
+			content, _ := os.ReadFile(secretPath)
+			l.Logger.Infof("secret file %s content: %s", secretPath, string(content))
+
 			l.Logger.Infof("Adding secret %s to the build, available with 'RUN --mount=type=secret,id=%s'", fullID, fullID)
 		}
 	}
