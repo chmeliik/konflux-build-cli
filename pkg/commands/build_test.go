@@ -1099,6 +1099,30 @@ func Test_Build_Run(t *testing.T) {
 		restoredDir, _ := os.Getwd()
 		g.Expect(restoredDir).To(Equal(tempDir))
 	})
+
+	t.Run("should pass proxy params to pre-pull", func(t *testing.T) {
+		beforeEach()
+		os.WriteFile(
+			filepath.Join(c.Params.Context, "Containerfile"),
+			[]byte("FROM registry.example.com/base:latest"),
+			0644,
+		)
+		c.Params.ImagePullProxy = "http://proxy:8080"
+		c.Params.ImagePullNoProxy = "localhost,10.0.0.0/8"
+
+		isPullCalled := false
+		_mockBuildahCli.PullFunc = func(args *cliwrappers.BuildahPullArgs) error {
+			isPullCalled = true
+			g.Expect(args.Image).To(Equal("registry.example.com/base:latest"))
+			g.Expect(args.HttpProxy).To(Equal("http://proxy:8080"))
+			g.Expect(args.NoProxy).To(Equal("localhost,10.0.0.0/8"))
+			return nil
+		}
+
+		err := c.Run()
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(isPullCalled).To(BeTrue())
+	})
 }
 
 func Test_goArchToArchitectureLabel(t *testing.T) {

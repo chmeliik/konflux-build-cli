@@ -433,6 +433,46 @@ func TestBuildahCli_Pull(t *testing.T) {
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("image arg is empty"))
 	})
+
+	t.Run("should set http proxy env vars", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedEnv []string
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			capturedEnv = cmd.Env
+			return "", "", 0, nil
+		}
+
+		pullArgs := &cliwrappers.BuildahPullArgs{
+			Image:     image,
+			HttpProxy: "http://proxy.example.com:8080",
+			NoProxy:   "localhost,127.0.0.1",
+		}
+
+		err := buildahCli.Pull(pullArgs)
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(capturedEnv).To(ContainElements(
+			"HTTP_PROXY=http://proxy.example.com:8080",
+			"HTTPS_PROXY=http://proxy.example.com:8080",
+			"NO_PROXY=localhost,127.0.0.1",
+		))
+	})
+
+	t.Run("should not set env vars when no proxy is configured", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedEnv []string
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			capturedEnv = cmd.Env
+			return "", "", 0, nil
+		}
+
+		pullArgs := &cliwrappers.BuildahPullArgs{Image: image}
+
+		err := buildahCli.Pull(pullArgs)
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(capturedEnv).To(BeNil())
+	})
 }
 
 func TestBuildahCli_Inspect(t *testing.T) {
