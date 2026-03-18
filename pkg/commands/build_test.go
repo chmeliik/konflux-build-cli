@@ -1558,10 +1558,11 @@ func Test_Build_collectBaseImages(t *testing.T) {
 	g := NewWithT(t)
 
 	tests := []struct {
-		name        string
-		dockerfile  string
-		targetStage int
-		expected    []string
+		name                 string
+		dockerfile           string
+		targetStage          int
+		dontSkipUnusedStages bool
+		expected             []string
 	}{
 		{
 			name: "FROM scratch returns empty",
@@ -1763,12 +1764,51 @@ func Test_Build_collectBaseImages(t *testing.T) {
 				"golang:1.21",
 			},
 		},
+		{
+			name: "when SkipUnusedStages=false, includes all stages up to target",
+			dockerfile: strings.Join([]string{
+				"FROM golang:1.21 AS unused-1",
+				"RUN --mount=type=cache,from=registry.example.com/cache:latest,target=/cache echo cached",
+				"",
+				"FROM rust:1.70 AS unused-2",
+				"COPY --from=busybox:latest /bin/sh /bin/sh",
+				"",
+				"FROM alpine:3.18",
+			}, "\n"),
+			targetStage:          2,
+			dontSkipUnusedStages: true,
+			expected: []string{
+				"alpine:3.18",
+				"busybox:latest",
+				"golang:1.21",
+				"registry.example.com/cache:latest",
+				"rust:1.70",
+			},
+		},
+		{
+			name: "when SkipUnusedStages=false and targetStage is not last, excludes later stages",
+			dockerfile: strings.Join([]string{
+				"FROM golang:1.21 AS unused-1",
+				"",
+				"FROM rust:1.70 AS target",
+				"",
+				"FROM alpine:3.18",
+			}, "\n"),
+			targetStage:          1,
+			dontSkipUnusedStages: true,
+			expected: []string{
+				"golang:1.21",
+				"rust:1.70",
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			df := parseDockerfile(t, g, tt.dockerfile)
-			result := (&Build{}).collectBaseImages(df, tt.targetStage)
+
+			c := &Build{Params: &BuildParams{SkipUnusedStages: !tt.dontSkipUnusedStages}}
+			result := c.collectBaseImages(df, tt.targetStage)
 			if len(tt.expected) == 0 {
 				g.Expect(result).To(BeEmpty())
 			} else {

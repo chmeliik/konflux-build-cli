@@ -204,6 +204,14 @@ var BuildParamsConfig = map[string]common.Parameter{
 		TypeKind:   reflect.String,
 		Usage:      "Target stage in the Containerfile to build. By default, the target stage is the last stage.",
 	},
+	"skip-unused-stages": {
+		Name:         "skip-unused-stages",
+		ShortName:    "",
+		EnvVarName:   "KBC_BUILD_SKIP_UNUSED_STAGES",
+		TypeKind:     reflect.Bool,
+		DefaultValue: "true",
+		Usage:        "Skip stages in multi-stage builds which don't affect the target stage.",
+	},
 	"hermetic": {
 		Name:         "hermetic",
 		ShortName:    "",
@@ -239,6 +247,7 @@ type BuildParams struct {
 	InheritLabels              bool     `paramName:"inherit-labels"`
 	IncludeLegacyBuildinfoPath bool     `paramName:"include-legacy-buildinfo-path"`
 	Target                     string   `paramName:"target"`
+	SkipUnusedStages           bool     `paramName:"skip-unused-stages"`
 	Hermetic                   bool     `paramName:"hermetic"`
 	ExtraArgs                  []string // Additional arguments to pass to buildah build
 }
@@ -1124,10 +1133,14 @@ func (c *Build) prePullBaseImages(df *dockerfile.Dockerfile) error {
 
 // Collect all images needed to build the target stage.
 //
-// For all the instructions in the target stage that support a 'from' reference
-// (those being 'FROM <ref>', 'COPY --from=<ref>', 'RUN --mount=from=<ref>'):
-// - If <ref> is an image, collect this image
-// - If <ref> is an earlier stage in the containerfile, also collect images for that stage
+// For all the "stages of interest":
+//   - For all the instructions that support a 'from' reference:
+//     (those being 'FROM <ref>', 'COPY --from=<ref>', 'RUN --mount=from=<ref>'):
+//     -- If <ref> is an image, collect this image
+//     -- If <ref> is an earlier stage in the containerfile, also collect images for that stage
+//
+// With skip-unused-stages=true (the default), there is one stage of interest - the target stage.
+// With skip-unused-stages=false, it's all the stages up to and including the target stage.
 func (c *Build) collectBaseImages(df *dockerfile.Dockerfile, targetStage int) []string {
 	baseImageSet := make(map[string]struct{})
 
@@ -1142,7 +1155,15 @@ func (c *Build) collectBaseImages(df *dockerfile.Dockerfile, targetStage int) []
 			}
 		}
 	}
-	enqueue(targetStage)
+	if c.Params.SkipUnusedStages {
+		enqueue(targetStage)
+	} else {
+		// skip-unused-stages=false => buildah builds all stages up to and including the target stage
+		// The graph search algorithm is unnecessary in this case, but let's keep things simple
+		for i := range targetStage + 1 {
+			enqueue(i)
+		}
+	}
 
 	for len(stagesToProcess) > 0 {
 		stageIdx := stagesToProcess[0]
@@ -1249,6 +1270,7 @@ func (c *Build) buildImage() error {
 		ExtraArgs:        c.Params.ExtraArgs,
 		InheritLabels:    &c.Params.InheritLabels,
 		Target:           c.Params.Target,
+		SkipUnusedStages: &c.Params.SkipUnusedStages,
 		Wrapper:          c.chooseBuildahWrappers(),
 	}
 	if c.Params.WorkdirMount != "" {

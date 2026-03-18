@@ -51,6 +51,7 @@ type BuildParams struct {
 	InheritLabels              *bool
 	IncludeLegacyBuildinfoPath bool
 	Target                     string
+	SkipUnusedStages           *bool
 	Hermetic                   bool
 	ExtraArgs                  []string
 }
@@ -285,6 +286,9 @@ func runBuildWithOutput(container *TestRunnerContainer, buildParams BuildParams)
 	}
 	if buildParams.Target != "" {
 		args = append(args, "--target", buildParams.Target)
+	}
+	if buildParams.SkipUnusedStages != nil {
+		args = append(args, fmt.Sprintf("--skip-unused-stages=%t", *buildParams.SkipUnusedStages))
 	}
 	if buildParams.Hermetic {
 		args = append(args, "--hermetic")
@@ -2096,6 +2100,44 @@ LABEL common.label=common-stage2
 			HaveKeyWithValue("common.label", "common-stage1"),
 			Not(HaveKey("stage2.label")),
 		))
+	})
+
+	t.Run("DontSkipUnusedStages", func(t *testing.T) {
+		SetupGomega(t)
+
+		contextDir := setupTestContext(t)
+		writeContainerfile(contextDir, fmt.Sprintf(`
+FROM %s
+LABEL stage=stage0
+RUN echo stage 0 was built
+
+FROM scratch AS target
+LABEL stage=target
+
+FROM image.does.not/exist:1 AS stage-after-target
+`, baseImage))
+
+		outputRef := "localhost/test-dont-skip-unused-stages:" + GenerateUniqueTag(t)
+
+		buildParams := BuildParams{
+			Context:          contextDir,
+			OutputRef:        outputRef,
+			Push:             false,
+			Target:           "target",
+			SkipUnusedStages: boolptr(false),
+		}
+
+		container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+		stdout, _, err := runBuildWithOutput(container, buildParams)
+		Expect(err).ToNot(HaveOccurred())
+
+		// Stage 0 should be built despite not being needed
+		Expect(stdout).To(ContainSubstring("stage 0 was built"))
+
+		// But the target stage should still be "target"
+		imageMeta := getImageMeta(container, outputRef)
+		Expect(imageMeta.labels).To(HaveKeyWithValue("stage", "target"))
 	})
 
 	t.Run("Hermetic", func(t *testing.T) {

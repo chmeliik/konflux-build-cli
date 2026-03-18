@@ -58,10 +58,11 @@ type BuildahBuildArgs struct {
 	SourceDateEpoch  string
 	RewriteTimestamp bool
 	// Defaults to true in the CLI, need a way to distinguish between explicitly false and unset
-	InheritLabels *bool
-	Target        string
-	ExtraArgs     []string
-	Wrapper       *WrapperCmd
+	InheritLabels    *bool
+	Target           string
+	SkipUnusedStages *bool
+	ExtraArgs        []string
+	Wrapper          *WrapperCmd
 }
 
 type BuildahSecret struct {
@@ -219,6 +220,10 @@ func (b *BuildahCli) Build(args *BuildahBuildArgs) error {
 
 	if args.Target != "" {
 		buildahArgs = append(buildahArgs, "--target="+args.Target)
+	}
+
+	if args.SkipUnusedStages != nil {
+		buildahArgs = append(buildahArgs, fmt.Sprintf("--skip-unused-stages=%t", *args.SkipUnusedStages))
 	}
 
 	// Append extra arguments before the context directory
