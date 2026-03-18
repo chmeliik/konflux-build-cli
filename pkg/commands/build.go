@@ -220,6 +220,20 @@ var BuildParamsConfig = map[string]common.Parameter{
 		DefaultValue: "false",
 		Usage:        "Prevent network access while building the containerfile.",
 	},
+	"image-pull-proxy": {
+		Name:       "image-pull-proxy",
+		ShortName:  "",
+		EnvVarName: "KBC_BUILD_IMAGE_PULL_PROXY",
+		TypeKind:   reflect.String,
+		Usage:      "Set HTTP_PROXY and HTTPS_PROXY for base image pulls.",
+	},
+	"image-pull-noproxy": {
+		Name:       "image-pull-noproxy",
+		ShortName:  "",
+		EnvVarName: "KBC_BUILD_IMAGE_PULL_NOPROXY",
+		TypeKind:   reflect.String,
+		Usage:      "Set NO_PROXY for base image pulls.",
+	},
 }
 
 type BuildParams struct {
@@ -249,6 +263,8 @@ type BuildParams struct {
 	Target                     string   `paramName:"target"`
 	SkipUnusedStages           bool     `paramName:"skip-unused-stages"`
 	Hermetic                   bool     `paramName:"hermetic"`
+	ImagePullProxy             string   `paramName:"image-pull-proxy"`
+	ImagePullNoProxy           string   `paramName:"image-pull-noproxy"`
 	ExtraArgs                  []string // Additional arguments to pass to buildah build
 }
 
@@ -1082,7 +1098,11 @@ func splitTransport(imageRef string) (string, string) {
 
 func (c *Build) getImageLabels(imageRef string) (map[string]string, error) {
 	l.Logger.Debugf("Pulling image %s to read labels...", imageRef)
-	err := c.CliWrappers.BuildahCli.Pull(&cliWrappers.BuildahPullArgs{Image: imageRef})
+	err := c.CliWrappers.BuildahCli.Pull(&cliWrappers.BuildahPullArgs{
+		Image:     imageRef,
+		HttpProxy: c.Params.ImagePullProxy,
+		NoProxy:   c.Params.ImagePullNoProxy,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("pulling image %s: %w", imageRef, err)
 	}
@@ -1123,7 +1143,11 @@ func (c *Build) prePullBaseImages(df *dockerfile.Dockerfile) error {
 			continue
 		}
 		l.Logger.Debugf("Pre-pulling base image: %s", image)
-		if err := c.CliWrappers.BuildahCli.Pull(&cliWrappers.BuildahPullArgs{Image: image}); err != nil {
+		if err := c.CliWrappers.BuildahCli.Pull(&cliWrappers.BuildahPullArgs{
+			Image:     image,
+			HttpProxy: c.Params.ImagePullProxy,
+			NoProxy:   c.Params.ImagePullNoProxy,
+		}); err != nil {
 			return fmt.Errorf("pre-pulling image %s: %w", image, err)
 		}
 	}

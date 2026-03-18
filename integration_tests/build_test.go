@@ -3,12 +3,16 @@ package integration_tests
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -53,6 +57,8 @@ type BuildParams struct {
 	Target                     string
 	SkipUnusedStages           *bool
 	Hermetic                   bool
+	ImagePullProxy             string
+	ImagePullNoProxy           string
 	ExtraArgs                  []string
 }
 
@@ -293,6 +299,12 @@ func runBuildWithOutput(container *TestRunnerContainer, buildParams BuildParams)
 	if buildParams.Hermetic {
 		args = append(args, "--hermetic")
 	}
+	if buildParams.ImagePullProxy != "" {
+		args = append(args, "--image-pull-proxy", buildParams.ImagePullProxy)
+	}
+	if buildParams.ImagePullNoProxy != "" {
+		args = append(args, "--image-pull-noproxy", buildParams.ImagePullNoProxy)
+	}
 	// Add separator and extra args if provided
 	if len(buildParams.ExtraArgs) > 0 {
 		args = append(args, "--")
@@ -502,6 +514,65 @@ func expectEqualMaps(m1 map[string]string, m2 map[string]string, description ...
 	slices.Sort(m2pairs)
 
 	Expect(m1pairs).To(ConsistOf(m2pairs), description...)
+}
+
+// Starts a minimal HTTP forward proxy that handles CONNECT tunneling.
+// The proxy runs on 127.0.0.1:<randomly selected port>.
+// The test container can connect to it because it runs with --network=host.
+//
+// Returns the proxy address and a map of hosts that received CONNECT requests.
+func startForwardProxy(t *testing.T) (string, *sync.Map) {
+	var connectedHosts sync.Map
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			http.Error(w, "only CONNECT is supported", http.StatusMethodNotAllowed)
+			return
+		}
+
+		connectedHosts.Store(r.Host, true)
+
+		dest, err := net.DialTimeout("tcp", r.Host, 10*time.Second)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer dest.Close()
+
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			http.Error(w, "hijacking not supported", http.StatusInternalServerError)
+			return
+		}
+
+		w.WriteHeader(http.StatusOK)
+
+		client, _, err := hijacker.Hijack()
+		if err != nil {
+			return
+		}
+		defer client.Close()
+
+		var wg sync.WaitGroup
+		wg.Go(func() {
+			io.Copy(dest, client)
+			dest.Close()
+		})
+		wg.Go(func() {
+			io.Copy(client, dest)
+			client.Close()
+		})
+		wg.Wait()
+	})
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	Expect(err).ToNot(HaveOccurred())
+
+	server := &http.Server{Handler: handler}
+	go server.Serve(listener)
+	t.Cleanup(func() { server.Close() })
+
+	return listener.Addr().String(), &connectedHosts
 }
 
 func TestBuild(t *testing.T) {
@@ -2383,5 +2454,32 @@ RUN cp /random-data.bin /data/realBaseImage.bin
 				ContainSubstring("8192\tdata/realBaseImage.bin"),
 			))
 		})
+	})
+
+	t.Run("ImagePullProxy", func(t *testing.T) {
+		SetupGomega(t)
+
+		proxyAddr, connectedHosts := startForwardProxy(t)
+
+		contextDir := setupTestContext(t)
+		writeContainerfile(contextDir, fmt.Sprintf("FROM %s\n", baseImage))
+
+		outputRef := "localhost/test-image-pull-proxy:" + GenerateUniqueTag(t)
+
+		buildParams := BuildParams{
+			Context:        contextDir,
+			OutputRef:      outputRef,
+			Push:           false,
+			ImagePullProxy: "http://" + proxyAddr,
+		}
+
+		container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+		err := runBuild(container, buildParams)
+		Expect(err).ToNot(HaveOccurred())
+
+		_, proxiedRegistry := connectedHosts.Load("registry.access.redhat.com:443")
+		Expect(proxiedRegistry).To(BeTrue(),
+			"Expected a CONNECT request to registry.access.redhat.com:443 through the proxy")
 	})
 }
