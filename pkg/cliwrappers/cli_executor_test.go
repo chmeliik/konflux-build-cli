@@ -1,6 +1,7 @@
 package cliwrappers_test
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -8,9 +9,32 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+	"github.com/sirupsen/logrus"
 
 	"github.com/konflux-ci/konflux-build-cli/pkg/cliwrappers"
+	l "github.com/konflux-ci/konflux-build-cli/pkg/logger"
 )
+
+func captureLogOutput(fn func()) string {
+	origOut := l.Logger.Out
+	origFormatter := l.Logger.Formatter
+	origLevel := l.Logger.Level
+
+	var buf bytes.Buffer
+	l.Logger.SetOutput(&buf)
+	l.Logger.SetFormatter(&logrus.TextFormatter{DisableTimestamp: true})
+	l.Logger.SetLevel(logrus.InfoLevel)
+
+	defer func() {
+		l.Logger.SetOutput(origOut)
+		l.Logger.SetFormatter(origFormatter)
+		l.Logger.SetLevel(origLevel)
+	}()
+
+	fn()
+
+	return buf.String()
+}
 
 func TestNewCliExecutor(t *testing.T) {
 	t.Run("should create new CLI executor instance", func(t *testing.T) {
@@ -155,14 +179,21 @@ func TestCliExecutor_ExecuteWithLogOutput(t *testing.T) {
 
 		executor := cliwrappers.NewCliExecutor()
 
-		cmd := cliwrappers.Command("echo", "test output")
-		cmd.LogOutput = true
-		stdout, stderr, exitCode, err := executor.Execute(cmd)
+		var stdout, stderr string
+		var exitCode int
+		var err error
+		logOutput := captureLogOutput(func() {
+			cmd := cliwrappers.Command("echo", "test output")
+			cmd.LogOutput = true
+			stdout, stderr, exitCode, err = executor.Execute(cmd)
+		})
 
 		g.Expect(err).ToNot(HaveOccurred())
 		g.Expect(exitCode).To(Equal(0))
 		g.Expect(strings.TrimSpace(stdout)).To(Equal("test output"))
 		g.Expect(stderr).To(BeEmpty())
+
+		g.Expect(logOutput).To(ContainSubstring("echo [stdout] test output"))
 	})
 
 	t.Run("should handle commands that write to both stdout and stderr", func(t *testing.T) {
@@ -173,19 +204,33 @@ func TestCliExecutor_ExecuteWithLogOutput(t *testing.T) {
 		var stdout, stderr string
 		var exitCode int
 		var err error
-		var cmd cliwrappers.Cmd
-		if runtime.GOOS == "windows" {
-			cmd = cliwrappers.Command("cmd", "/c", "echo stdout output & echo stderr output 1>&2")
-		} else {
-			cmd = cliwrappers.Command("sh", "-c", "echo 'stdout output'; echo 'stderr output' >&2")
-		}
-		cmd.LogOutput = true
-		stdout, stderr, exitCode, err = executor.Execute(cmd)
+		logOutput := captureLogOutput(func() {
+			var cmd cliwrappers.Cmd
+			if runtime.GOOS == "windows" {
+				cmd = cliwrappers.Command("cmd", "/c", "echo stdout output & echo stderr output 1>&2")
+			} else {
+				cmd = cliwrappers.Command("sh", "-c", "echo 'stdout output'; echo 'stderr output' >&2")
+			}
+			cmd.LogOutput = true
+			stdout, stderr, exitCode, err = executor.Execute(cmd)
+		})
 
 		g.Expect(err).ToNot(HaveOccurred())
 		g.Expect(exitCode).To(Equal(0))
 		g.Expect(stdout).To(ContainSubstring("stdout output"))
 		g.Expect(stderr).To(ContainSubstring("stderr output"))
+
+		g.Expect(logOutput).To(
+			Or(
+				SatisfyAll(
+					ContainSubstring("cmd [stdout] stdout output"),
+					ContainSubstring("cmd [stderr] stderr output"),
+				),
+				SatisfyAll(
+					ContainSubstring("sh [stdout] stdout output"),
+					ContainSubstring("sh [stderr] stderr output"),
+				),
+			))
 	})
 
 	t.Run("should handle multiline output correctly", func(t *testing.T) {
@@ -196,14 +241,16 @@ func TestCliExecutor_ExecuteWithLogOutput(t *testing.T) {
 		var stdout, stderr string
 		var exitCode int
 		var err error
-		var cmd cliwrappers.Cmd
-		if runtime.GOOS == "windows" {
-			cmd = cliwrappers.Command("cmd", "/c", "echo line1 & echo line2 & echo line3")
-		} else {
-			cmd = cliwrappers.Command("sh", "-c", "echo 'line1'; echo 'line2'; echo 'line3'")
-		}
-		cmd.LogOutput = true
-		stdout, stderr, exitCode, err = executor.Execute(cmd)
+		logOutput := captureLogOutput(func() {
+			var cmd cliwrappers.Cmd
+			if runtime.GOOS == "windows" {
+				cmd = cliwrappers.Command("cmd", "/c", "echo line1 & echo line2 & echo line3")
+			} else {
+				cmd = cliwrappers.Command("sh", "-c", "echo 'line1'; echo 'line2'; echo 'line3'")
+			}
+			cmd.LogOutput = true
+			stdout, stderr, exitCode, err = executor.Execute(cmd)
+		})
 
 		g.Expect(err).ToNot(HaveOccurred())
 		g.Expect(exitCode).To(Equal(0))
@@ -211,6 +258,10 @@ func TestCliExecutor_ExecuteWithLogOutput(t *testing.T) {
 		g.Expect(stdout).To(ContainSubstring("line2"))
 		g.Expect(stdout).To(ContainSubstring("line3"))
 		g.Expect(stderr).To(BeEmpty())
+
+		g.Expect(logOutput).To(ContainSubstring("[stdout] line1"))
+		g.Expect(logOutput).To(ContainSubstring("[stdout] line2"))
+		g.Expect(logOutput).To(ContainSubstring("[stdout] line3"))
 	})
 
 	t.Run("should handle command with non-zero exit code", func(t *testing.T) {
@@ -221,19 +272,23 @@ func TestCliExecutor_ExecuteWithLogOutput(t *testing.T) {
 		var stdout, stderr string
 		var exitCode int
 		var err error
-		var cmd cliwrappers.Cmd
-		if runtime.GOOS == "windows" {
-			cmd = cliwrappers.Command("cmd", "/c", "echo output & exit 5")
-		} else {
-			cmd = cliwrappers.Command("sh", "-c", "echo 'output'; exit 5")
-		}
-		cmd.LogOutput = true
-		stdout, stderr, exitCode, err = executor.Execute(cmd)
+		logOutput := captureLogOutput(func() {
+			var cmd cliwrappers.Cmd
+			if runtime.GOOS == "windows" {
+				cmd = cliwrappers.Command("cmd", "/c", "echo output & exit 5")
+			} else {
+				cmd = cliwrappers.Command("sh", "-c", "echo 'output'; exit 5")
+			}
+			cmd.LogOutput = true
+			stdout, stderr, exitCode, err = executor.Execute(cmd)
+		})
 
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(exitCode).To(Equal(5))
 		g.Expect(stdout).To(ContainSubstring("output"))
 		g.Expect(stderr).To(BeEmpty())
+
+		g.Expect(logOutput).To(ContainSubstring("[stdout] output"))
 	})
 
 	t.Run("should handle command not found", func(t *testing.T) {
