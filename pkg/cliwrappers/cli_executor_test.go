@@ -171,6 +171,26 @@ func TestCliExecutor_Execute(t *testing.T) {
 		g.Expect(stderr).To(BeEmpty())
 		g.Expect(err.Error()).To(ContainSubstring("no such file or directory"))
 	})
+
+	t.Run("should allow setting environment variables", func(t *testing.T) {
+		g := NewWithT(t)
+
+		executor := cliwrappers.NewCliExecutor()
+
+		var cmd cliwrappers.Cmd
+		if runtime.GOOS == "windows" {
+			cmd = cliwrappers.Command("cmd", "/c", "echo %MY_TEST_VAR%")
+		} else {
+			cmd = cliwrappers.Command("sh", "-c", "echo $MY_TEST_VAR")
+		}
+		cmd.Env = append(os.Environ(), "MY_TEST_VAR=custom_value")
+		stdout, stderr, exitCode, err := executor.Execute(cmd)
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(exitCode).To(Equal(0))
+		g.Expect(strings.TrimSpace(stdout)).To(Equal("custom_value"))
+		g.Expect(stderr).To(BeEmpty())
+	})
 }
 
 // Separate test suite for LogOutput: true because it's a separate code path

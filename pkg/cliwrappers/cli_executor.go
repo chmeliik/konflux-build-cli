@@ -18,6 +18,7 @@ type Cmd struct {
 	Name       string   // the name passed to [exec.Command]
 	Args       []string // the args passed to [exec.Command]
 	Dir        string   // same as [exec.Cmd.Dir]
+	Env        []string // same as [exec.Cmd.Env]
 	LogOutput  bool     // log stdout/stderr lines in real time
 	NameInLogs string   // when logging stdout/stderr, prefix lines with this name (defaults to Name)
 }
@@ -44,6 +45,7 @@ func NewCliExecutor() *CliExecutor {
 func (e *CliExecutor) Execute(c Cmd) (string, string, int, error) {
 	cmd := exec.Command(c.Name, c.Args...)
 	cmd.Dir = c.Dir
+	cmd.Env = c.Env
 
 	if !c.LogOutput {
 		var stdoutBuf, stderrBuf bytes.Buffer
