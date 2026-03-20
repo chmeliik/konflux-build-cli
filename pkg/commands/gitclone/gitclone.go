@@ -1,8 +1,10 @@
 package gitclone
 
 import (
+	"encoding/csv"
 	"fmt"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -62,7 +64,27 @@ func (c *GitClone) Run() error {
 		}
 	}
 
-	return nil
+	// Verify the checkout directory path doesn't escape OutputDir via symlinks
+	// before any destructive operations (clean/clone).
+	if err := c.verifyCheckoutDirContainment(); err != nil {
+		return fmt.Errorf("path containment check: %w", err)
+	}
+
+	if err := c.performClone(); err != nil {
+		return err
+	}
+
+	if err := c.gatherCommitInfo(); err != nil {
+		return err
+	}
+
+	if c.Params.FetchTags {
+		if _, err := c.CliWrappers.GitCli.FetchTags(); err != nil {
+			return err
+		}
+	}
+
+	return c.outputResults()
 }
 
 func (c *GitClone) logParams() {
@@ -114,7 +136,6 @@ func (c *GitClone) validateParams() error {
 		if strings.Contains(c.Params.Subdirectory, "..") {
 			return fmt.Errorf("subdirectory must not contain path traversal (..): %s", c.Params.Subdirectory)
 		}
-		// Verify the resolved path stays within OutputDir.
 		baseDir := c.Params.OutputDir
 		if baseDir == "" {
 			baseDir = "."
@@ -137,4 +158,168 @@ func (c *GitClone) validateParams() error {
 
 func (c *GitClone) getCheckoutDir() string {
 	return filepath.Join(c.Params.OutputDir, c.Params.Subdirectory)
+}
+
+// verifyCheckoutDirContainment ensures the checkout directory, after resolving
+// all symlinks, remains within the output directory. This prevents symlink-based
+// path traversal where a pre-existing symlink under OutputDir redirects
+// operations (deletion, git init) outside the workspace.
+func (c *GitClone) verifyCheckoutDirContainment() error {
+	if c.Params.Subdirectory == "" {
+		return nil // checkout dir is the output dir itself
+	}
+
+	baseDir := c.Params.OutputDir
+	if baseDir == "" {
+		baseDir = "."
+	}
+
+	resolvedOutput, err := filepath.Abs(baseDir)
+	if err != nil {
+		return fmt.Errorf("failed to resolve output directory: %w", err)
+	}
+	if evaluated, evalErr := filepath.EvalSymlinks(resolvedOutput); evalErr == nil {
+		resolvedOutput = evaluated
+	}
+
+	// Walk each component of Subdirectory under OutputDir. If any existing
+	// component is a symlink, reject it.
+	parts := strings.Split(filepath.Clean(c.Params.Subdirectory), string(filepath.Separator))
+	current := baseDir
+	for _, part := range parts {
+		current = filepath.Join(current, part)
+		linfo, lErr := os.Lstat(current)
+		if os.IsNotExist(lErr) {
+			break // remaining components don't exist yet
+		}
+		if lErr != nil {
+			return fmt.Errorf("failed to stat path component %s: %w", current, lErr)
+		}
+		if linfo.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("checkout path component is a symlink: %s (symlinks in the checkout path are not allowed)", current)
+		}
+	}
+
+	// If the full checkout path already exists, do a resolved-path containment
+	// check as belt-and-suspenders.
+	checkoutDir := c.getCheckoutDir()
+	if _, statErr := os.Lstat(checkoutDir); statErr == nil {
+		resolvedCheckout, evalErr := filepath.EvalSymlinks(checkoutDir)
+		if evalErr != nil {
+			return fmt.Errorf("failed to resolve checkout directory: %w", evalErr)
+		}
+		resolvedCheckout, err = filepath.Abs(resolvedCheckout)
+		if err != nil {
+			return fmt.Errorf("failed to get absolute checkout path: %w", err)
+		}
+		if resolvedCheckout != resolvedOutput && !strings.HasPrefix(resolvedCheckout, resolvedOutput+string(filepath.Separator)) {
+			return fmt.Errorf("checkout directory %s resolves to %s which is outside output directory %s", checkoutDir, resolvedCheckout, resolvedOutput)
+		}
+	}
+
+	return nil
+}
+
+// performClone initializes a git repo, fetches the requested revision, and checks it out.
+func (c *GitClone) performClone() error {
+	checkoutDir := c.getCheckoutDir()
+
+	// Ensure checkout directory exists
+	if err := os.MkdirAll(checkoutDir, 0755); err != nil {
+		return fmt.Errorf("failed to create checkout directory: %w", err)
+	}
+
+	// Re-verify containment after creating the directory, in case a path
+	// component was replaced between the earlier check and MkdirAll.
+	if err := c.verifyCheckoutDirContainment(); err != nil {
+		return fmt.Errorf("path containment check after mkdir: %w", err)
+	}
+
+	l.Logger.Debug("Initializing git repository")
+	if err := c.CliWrappers.GitCli.Init(); err != nil {
+		return fmt.Errorf("git init failed: %w", err)
+	}
+
+	// Configure sparse checkout if directories are specified
+	if c.Params.SparseCheckoutDirectories != "" {
+		directories, err := parseCSV(c.Params.SparseCheckoutDirectories)
+		if err != nil {
+			return fmt.Errorf("failed to parse sparse-checkout-directories: %w", err)
+		}
+		if err := c.CliWrappers.GitCli.SetSparseCheckout(directories); err != nil {
+			return err
+		}
+	}
+
+	l.Logger.Debugf("Adding remote origin: %s", sanitizeURL(c.Params.URL))
+	if _, err := c.CliWrappers.GitCli.RemoteAdd("origin", c.Params.URL); err != nil {
+		return fmt.Errorf("git remote add failed: %w", err)
+	}
+
+	if err := c.fetchRevision(); err != nil {
+		return err
+	}
+
+	// If both refspec and revision are set, the refspec is fetched first,
+	// then the specific revision is checked out. Otherwise, check out FETCH_HEAD.
+	checkoutRef := "FETCH_HEAD"
+	if c.Params.Refspec != "" && c.Params.Revision != "" {
+		checkoutRef = c.Params.Revision
+	}
+
+	l.Logger.Debugf("Checking out %s", checkoutRef)
+	if err := c.CliWrappers.GitCli.Checkout(checkoutRef); err != nil {
+		return fmt.Errorf("git checkout failed: %w", err)
+	}
+
+	if c.Params.Submodules {
+		l.Logger.Debug("Updating submodules")
+		paths, err := parseCSV(c.Params.SubmodulePaths)
+		if err != nil {
+			return fmt.Errorf("failed to parse submodule-paths: %w", err)
+		}
+		if err := c.CliWrappers.GitCli.SubmoduleUpdate(true, c.Params.Depth, paths); err != nil {
+			return fmt.Errorf("git submodule update failed: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// fetchRevision fetches refs from the remote based on refspec and revision parameters.
+// If a refspec is provided, it is fetched directly. Otherwise, the revision is used as the refspec.
+func (c *GitClone) fetchRevision() error {
+	refspec := c.Params.Refspec
+	if refspec == "" && c.Params.Revision != "" {
+		refspec = c.Params.Revision
+	}
+
+	l.Logger.Debugf("Fetching from origin (depth=%d, refspec=%s)", c.Params.Depth, refspec)
+
+	maxAttempts := c.Params.RetryMaxAttempts
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+
+	err := c.CliWrappers.GitCli.FetchWithRefspec(cliwrappers.GitFetchOptions{
+		Remote:      "origin",
+		Refspec:     refspec,
+		Depth:       c.Params.Depth,
+		Submodules:  c.Params.Submodules,
+		MaxAttempts: maxAttempts,
+	})
+	if err != nil {
+		return fmt.Errorf("git fetch failed: %w", err)
+	}
+	return nil
+}
+
+// parseCSV parses a comma-separated string into a slice of trimmed values.
+func parseCSV(input string) ([]string, error) {
+	if input == "" {
+		return nil, nil
+	}
+	reader := csv.NewReader(strings.NewReader(input))
+	reader.TrimLeadingSpace = true
+	return reader.Read()
 }
