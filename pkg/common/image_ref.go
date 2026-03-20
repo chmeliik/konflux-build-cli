@@ -2,6 +2,7 @@ package common
 
 import (
 	_ "crypto/sha256"
+	"fmt"
 
 	"github.com/containers/image/v5/docker/reference"
 	go_digest "github.com/opencontainers/go-digest"
@@ -36,4 +37,41 @@ func IsImageDigestValid(digest string) bool {
 	// Use the go-digest library (which is used by containers/image) to parse and validate.
 	_, err := go_digest.Parse(digest)
 	return err == nil
+}
+
+// GetImageDigest extracts the digest from an image reference.
+// Returns the digest string (e.g., "sha256:abc123...") or empty string if no digest.
+func GetImageDigest(imageRef string) string {
+	ref, err := reference.Parse(imageRef)
+	if err != nil {
+		return ""
+	}
+
+	canonical, ok := ref.(reference.Canonical)
+	if !ok {
+		return ""
+	}
+
+	return canonical.Digest().String()
+}
+
+// ValidateImageHasTagOrDigest checks that an image reference has at least a tag or digest.
+// Returns an error if the image has neither a tag nor a digest.
+func ValidateImageHasTagOrDigest(imageRef string) error {
+	ref, err := reference.Parse(imageRef)
+	if err != nil {
+		return err
+	}
+
+	// Check if the reference has a digest
+	if _, ok := ref.(reference.Canonical); ok {
+		return nil
+	}
+
+	// Check if the reference has a tag
+	if _, ok := ref.(reference.Tagged); ok {
+		return nil
+	}
+
+	return fmt.Errorf("image '%s' must have a tag or digest", imageRef)
 }

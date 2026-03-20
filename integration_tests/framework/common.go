@@ -181,6 +181,9 @@ type TestImageConfig struct {
 	// Add a ramdom data file of given size.
 	// Skip generation if the value is not positive.
 	RandomDataSize int64
+	// Format of the built image's manifest and metadata (oci or docker)
+	// If empty, defaults to oci
+	BuildahFormat string
 }
 
 func CreateTestImage(config TestImageConfig) error {
@@ -230,6 +233,13 @@ func CreateTestImage(config TestImageConfig) error {
 	buildArgs := []string{"build", "--tag", config.ImageRef}
 	if config.Platform != "" {
 		buildArgs = append(buildArgs, "--platform", config.Platform)
+	}
+	// --format is only supported by buildah/podman, not docker
+	if config.BuildahFormat != "" {
+		if containerTool == "docker" {
+			return fmt.Errorf("BuildahFormat is not supported with docker, only buildah/podman support --format flag")
+		}
+		buildArgs = append(buildArgs, "--format", config.BuildahFormat)
 	}
 	buildArgs = append(buildArgs, ".")
 	stdout, stderr, _, err := executor.Execute(cliWrappers.Cmd{Name: containerTool, Args: buildArgs, Dir: testImageDir})

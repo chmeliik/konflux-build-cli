@@ -316,3 +316,97 @@ func Test_ImageRefUntils_IsImageTagValid(t *testing.T) {
 		})
 	}
 }
+
+func Test_ImageRefUntils_GetImageDigest(t *testing.T) {
+	tests := []struct {
+		name  string
+		image string
+		want  string
+	}{
+		{
+			name:  "image with digest should return digest",
+			image: "registry.io/namespace/image@sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a",
+			want:  "sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a",
+		},
+		{
+			name:  "image with tag and digest should return digest",
+			image: "registry.io/namespace/image:tag@sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a",
+			want:  "sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a",
+		},
+		{
+			name:  "image with only tag should return empty string",
+			image: "registry.io/namespace/image:tag",
+			want:  "",
+		},
+		{
+			name:  "image without tag or digest should return empty string",
+			image: "registry.io/namespace/image",
+			want:  "",
+		},
+		{
+			name:  "invalid image should return empty string",
+			image: "not a valid reference",
+			want:  "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := common.GetImageDigest(tc.image)
+			if got != tc.want {
+				t.Errorf("For %s expected %s, but got: %s", tc.image, tc.want, got)
+			}
+		})
+	}
+}
+
+func Test_ValidateImageHasTagOrDigest(t *testing.T) {
+	tests := []struct {
+		name      string
+		imageRef  string
+		wantError bool
+	}{
+		{
+			name:      "image with tag should pass",
+			imageRef:  "registry.io/repo:tag",
+			wantError: false,
+		},
+		{
+			name:      "image with digest should pass",
+			imageRef:  "registry.io/repo@sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+			wantError: false,
+		},
+		{
+			name:      "image with both tag and digest should pass",
+			imageRef:  "registry.io/repo:tag@sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+			wantError: false,
+		},
+		{
+			name:      "image without tag or digest should fail",
+			imageRef:  "registry.io/repo",
+			wantError: true,
+		},
+		{
+			name:      "simple image without tag or digest should fail",
+			imageRef:  "myimage",
+			wantError: true,
+		},
+		{
+			name:      "namespaced image without tag or digest should fail",
+			imageRef:  "namespace/myimage",
+			wantError: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := common.ValidateImageHasTagOrDigest(tc.imageRef)
+			if tc.wantError && err == nil {
+				t.Errorf("Expected error for %s, but got nil", tc.imageRef)
+			}
+			if !tc.wantError && err != nil {
+				t.Errorf("Expected no error for %s, but got: %v", tc.imageRef, err)
+			}
+		})
+	}
+}
