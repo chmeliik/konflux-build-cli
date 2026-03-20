@@ -23,6 +23,7 @@ type GitClone struct {
 	CliWrappers   CliWrappers
 	Results       Results
 	ResultsWriter common.ResultsWriterInterface
+	internalDir   string
 }
 
 func New(cmd *cobra.Command) (*GitClone, error) {
@@ -62,6 +63,29 @@ func (c *GitClone) Run() error {
 		if err := c.initCliWrappers(); err != nil {
 			return err
 		}
+	}
+
+	// internalDir is a temporary directory for storing credentials and config files
+	// (e.g., .git-credentials, .gitconfig, SSH keys) without modifying the user's home directory.
+	internalDir, err := os.MkdirTemp("", "git-clone-internal-*")
+	if err != nil {
+		return fmt.Errorf("failed to create internal directory: %w", err)
+	}
+	c.internalDir = internalDir
+
+	defer func() {
+		_ = os.RemoveAll(c.internalDir)
+	}()
+
+	c.setupGitConfig()
+
+	// Setup authentication
+	if err := c.setupBasicAuth(); err != nil {
+		return err
+	}
+
+	if err := c.setupSSH(); err != nil {
+		return err
 	}
 
 	// Verify the checkout directory path doesn't escape OutputDir via symlinks
