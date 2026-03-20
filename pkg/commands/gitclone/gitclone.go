@@ -81,6 +81,12 @@ func (c *GitClone) Run() error {
 		return err
 	}
 
+	if c.Params.MergeTargetBranch {
+		if err := c.mergeTargetBranch(); err != nil {
+			return err
+		}
+	}
+
 	if err := c.gatherCommitInfo(); err != nil {
 		return err
 	}
@@ -118,6 +124,13 @@ func sanitizeURL(rawURL string) string {
 	return parsed.String()
 }
 
+// normalizeGitURL strips trailing slashes and ".git" suffix for URL comparison.
+func normalizeGitURL(rawURL string) string {
+	rawURL = strings.TrimSuffix(rawURL, "/")
+	rawURL = strings.TrimSuffix(rawURL, ".git")
+	return rawURL
+}
+
 func (c *GitClone) validateParams() error {
 	if c.Params.URL == "" {
 		return fmt.Errorf("url parameter is required")
@@ -133,6 +146,9 @@ func (c *GitClone) validateParams() error {
 	}
 	if c.Params.RetryMaxAttempts > 100 {
 		return fmt.Errorf("retry-max-attempts must be <= 100, got %d", c.Params.RetryMaxAttempts)
+	}
+	if c.Params.MergeTargetBranch && c.Params.TargetBranch == "" {
+		return fmt.Errorf("target-branch is required when merge-target-branch is true")
 	}
 
 	// Validate subdirectory for path traversal
@@ -329,4 +345,76 @@ func parseCSV(input string) ([]string, error) {
 	reader := csv.NewReader(strings.NewReader(input))
 	reader.TrimLeadingSpace = true
 	return reader.Read()
+}
+
+func (c *GitClone) mergeTargetBranch() error {
+	if c.Params.Depth == 1 {
+		l.Logger.Warning("Shallow clone with depth=1 may cause merge conflicts due to insufficient commit history.")
+	}
+
+	if c.Params.MergeSourceDepth == 1 {
+		l.Logger.Warning("Shallow fetch with merge-source-depth=1 may cause merge conflicts due to insufficient commit history.")
+	}
+
+	mergeRemote := "origin"
+	if c.Params.MergeSourceRepoURL != "" {
+		normalizedOrigin := normalizeGitURL(c.Params.URL)
+		normalizedMerge := normalizeGitURL(c.Params.MergeSourceRepoURL)
+
+		if normalizedOrigin == normalizedMerge {
+			l.Logger.Debug("Merge source URL is the same as origin. Using existing 'origin' remote.")
+		} else {
+			l.Logger.Debugf("Merging from different repository: '%s'", c.Params.MergeSourceRepoURL)
+			mergeRemote = "merge-source"
+			if _, err := c.CliWrappers.GitCli.RemoteAdd(mergeRemote, c.Params.MergeSourceRepoURL); err != nil {
+				return err
+			}
+		}
+	}
+
+	maxAttempts := c.Params.RetryMaxAttempts
+	if maxAttempts < 1 {
+		maxAttempts = 1
+	}
+
+	err := c.CliWrappers.GitCli.FetchWithRefspec(cliwrappers.GitFetchOptions{
+		Remote:      mergeRemote,
+		Refspec:     c.Params.TargetBranch,
+		Depth:       c.Params.MergeSourceDepth,
+		Submodules:  false,
+		MaxAttempts: maxAttempts,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to fetch target branch: %w", err)
+	}
+
+	err = c.CliWrappers.GitCli.ConfigLocal("user.email", c.Params.MergeCommitAuthorEmail)
+	if err != nil {
+		return fmt.Errorf("failed to configure merge commit author email: %w", err)
+	}
+	err = c.CliWrappers.GitCli.ConfigLocal("user.name", c.Params.MergeCommitAuthorName)
+	if err != nil {
+		return fmt.Errorf("failed to configure merge commit author name: %w", err)
+	}
+
+	// Get the current HEAD SHA before merging to use in the commit message
+	currentSha, err := c.CliWrappers.GitCli.RevParse("HEAD", false, 0)
+	if err != nil {
+		return fmt.Errorf("failed to get pre-merge HEAD SHA: %w", err)
+	}
+
+	mergeRef := fmt.Sprintf("%s/%s", mergeRemote, c.Params.TargetBranch)
+	message := fmt.Sprintf("Merge branch '%s' from %s into %s", c.Params.TargetBranch, mergeRemote, currentSha)
+	merge, err := c.CliWrappers.GitCli.Merge(mergeRef, message)
+	if err != nil {
+		return fmt.Errorf("failed to merge target branch: %w", err)
+	}
+	l.Logger.Debugf("Merge: %s", merge)
+
+	c.Results.MergedSha, err = c.CliWrappers.GitCli.RevParse("HEAD", false, 0)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
