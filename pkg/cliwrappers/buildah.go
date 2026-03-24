@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/konflux-ci/konflux-build-cli/pkg/common"
+
 	l "github.com/konflux-ci/konflux-build-cli/pkg/logger"
 	ociv1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -308,7 +310,9 @@ func (b *BuildahCli) Push(args *BuildahPushArgs) (string, error) {
 }
 
 type BuildahPullArgs struct {
-	Image string
+	Image     string
+	HttpProxy string // Sets HTTP_PROXY and HTTPS_PROXY for the pull command
+	NoProxy   string // Sets NO_PROXY for the pull command
 }
 
 // Pull an image from the registry to local storage.
@@ -321,8 +325,15 @@ func (b *BuildahCli) Pull(args *BuildahPullArgs) error {
 
 	buildahLog.Debugf("Running command:\n%s", shellJoin("buildah", buildahArgs...))
 
+	cmd := Cmd{Name: "buildah", Args: buildahArgs, LogOutput: true}
+	env := common.ProxyEnvVars(args.HttpProxy, args.NoProxy)
+	if len(env) > 0 {
+		// Note: this overrides proxy vars already set in the environment, if any (last value wins)
+		cmd.Env = append(os.Environ(), env...)
+	}
+
 	retryer := NewRetryer(func() (string, string, int, error) {
-		return b.Executor.Execute(Cmd{Name: "buildah", Args: buildahArgs, LogOutput: true})
+		return b.Executor.Execute(cmd)
 	}).WithImageRegistryPreset().
 		StopIfOutputContains("unauthorized").
 		StopIfOutputContains("authentication required")
