@@ -33,7 +33,7 @@ type TestRunnerContainer struct {
 	user       string
 	privileged bool
 	env        map[string]string
-	volumes    map[string]string
+	volumes    map[string]hostMount // container dir => (host dir, options)
 	ports      map[string]string
 	networks   []string
 	results    map[string]string
@@ -41,6 +41,11 @@ type TestRunnerContainer struct {
 	executor cliWrappers.CliExecutorInterface
 
 	containerStatus ContainerStatus
+}
+
+type hostMount struct {
+	path    string
+	options string
 }
 
 // ContainerOption is a functional-style option for configuring TestRunnerContainer.
@@ -54,7 +59,7 @@ func NewTestRunnerContainer(name, image string, opts ...ContainerOption) *TestRu
 		name:     name,
 		image:    image,
 		env:      make(map[string]string),
-		volumes:  make(map[string]string),
+		volumes:  make(map[string]hostMount),
 		ports:    make(map[string]string),
 		results:  make(map[string]string),
 	}
@@ -133,7 +138,7 @@ func WithEnv(key, value string) ContainerOption {
 
 func (c *TestRunnerContainer) AddVolume(hostPath, containerPath string) {
 	c.ensureContainerNotStarted()
-	c.volumes[hostPath] = containerPath
+	c.volumes[containerPath] = hostMount{path: hostPath}
 }
 
 func WithVolume(hostPath, containerPath string) ContainerOption {
@@ -144,7 +149,7 @@ func WithVolume(hostPath, containerPath string) ContainerOption {
 
 func (c *TestRunnerContainer) AddVolumeWithOptions(hostPath, containerPath, mountOptions string) {
 	c.ensureContainerNotStarted()
-	c.volumes[hostPath] = containerPath + ":" + mountOptions
+	c.volumes[containerPath] = hostMount{path: hostPath, options: mountOptions}
 }
 
 func WithVolumeWithOptions(hostPath, containerPath, mountOptions string) ContainerOption {
@@ -220,8 +225,12 @@ func (c *TestRunnerContainer) Start() error {
 	for name, value := range c.env {
 		args = append(args, "-e", name+"="+value)
 	}
-	for hostPath, containerPath := range c.volumes {
-		args = append(args, "-v", hostPath+":"+containerPath)
+	for containerPath, mount := range c.volumes {
+		volumeArg := mount.path + ":" + containerPath
+		if mount.options != "" {
+			volumeArg += ":" + mount.options
+		}
+		args = append(args, "-v", volumeArg)
 	}
 	for hostPort, containerPort := range c.ports {
 		args = append(args, "-p", hostPort+":"+containerPort)
