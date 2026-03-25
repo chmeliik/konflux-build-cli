@@ -2464,6 +2464,11 @@ RUN cp /random-data.bin /data/realBaseImage.bin
 		contextDir := setupTestContext(t)
 		writeContainerfile(contextDir, fmt.Sprintf("FROM %s\n", baseImage))
 
+		// Use a clean container storage dir for this test to ensure the image gets pulled
+		containerStorage, err := createContainerStorageDir()
+		t.Cleanup(func() { removeContainerStorageDir(containerStorage) })
+		Expect(err).ToNot(HaveOccurred())
+
 		outputRef := "localhost/test-image-pull-proxy:" + GenerateUniqueTag(t)
 
 		buildParams := BuildParams{
@@ -2473,9 +2478,10 @@ RUN cp /random-data.bin /data/realBaseImage.bin
 			ImagePullProxy: "http://" + proxyAddr,
 		}
 
-		container := setupBuildContainerWithCleanup(t, buildParams, nil)
+		container := setupBuildContainerWithCleanup(t, buildParams, nil,
+			maybeMountContainerStorage(containerStorage, "taskuser"))
 
-		err := runBuild(container, buildParams)
+		err = runBuild(container, buildParams)
 		Expect(err).ToNot(HaveOccurred())
 
 		_, proxiedRegistry := connectedHosts.Load("registry.access.redhat.com:443")
