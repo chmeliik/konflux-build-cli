@@ -289,8 +289,6 @@ spec:
         value: "false"
       - name: ICM_KEEP_COMPAT_LOCATION
         value: "false"
-      - name: SKIP_UNUSED_STAGES
-        value: "false"
       runAfter:
       - prefetch-dependencies
       taskRef:
