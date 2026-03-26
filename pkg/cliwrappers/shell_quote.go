@@ -14,14 +14,16 @@ var shellUnsafe = regexp.MustCompile(`[^a-zA-Z0-9_%+,\-./:=@]`)
 // Try to avoid using this to execute shell commands, the intended use case is logging.
 func shellJoin(cmdName string, args ...string) string {
 	cmd := make([]string, len(args)+1)
-	cmd[0] = shellQuote(cmdName)
+	cmd[0] = ShellQuote(cmdName)
 	for i, arg := range args {
-		cmd[i+1] = shellQuote(arg)
+		cmd[i+1] = ShellQuote(arg)
 	}
 	return strings.Join(cmd, " ")
 }
 
-func shellQuote(arg string) string {
+// Quotes the argument (if necessary) so that, when interpreted by a POSIX shell,
+// it evaluates to the original string.
+func ShellQuote(arg string) string {
 	if arg == "" || shellUnsafe.MatchString(arg) {
 		return "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
 	}
