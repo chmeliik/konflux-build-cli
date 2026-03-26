@@ -11,6 +11,8 @@ ARG TARGETARCH
 
 RUN if curl -I https://google.com; then echo "Has network access!"; exit 1; fi
 
+RUN dnf repolist
+
 USER 1001
 
 WORKDIR /workspace
