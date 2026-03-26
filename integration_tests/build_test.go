@@ -59,6 +59,8 @@ type BuildParams struct {
 	Hermetic                   bool
 	ImagePullProxy             string
 	ImagePullNoProxy           string
+	YumReposDSources           []string
+	YumReposDTarget            string
 	ExtraArgs                  []string
 }
 
@@ -304,6 +306,13 @@ func runBuildWithOutput(container *TestRunnerContainer, buildParams BuildParams)
 	}
 	if buildParams.ImagePullNoProxy != "" {
 		args = append(args, "--image-pull-noproxy", buildParams.ImagePullNoProxy)
+	}
+	if len(buildParams.YumReposDSources) > 0 {
+		args = append(args, "--yum-repos-d-sources")
+		args = append(args, buildParams.YumReposDSources...)
+	}
+	if buildParams.YumReposDTarget != "" {
+		args = append(args, "--yum-repos-d-target", buildParams.YumReposDTarget)
 	}
 	// Add separator and extra args if provided
 	if len(buildParams.ExtraArgs) > 0 {
@@ -2487,5 +2496,157 @@ RUN cp /random-data.bin /data/realBaseImage.bin
 		_, proxiedRegistry := connectedHosts.Load("registry.access.redhat.com:443")
 		Expect(proxiedRegistry).To(BeTrue(),
 			"Expected a CONNECT request to registry.access.redhat.com:443 through the proxy")
+	})
+
+	t.Run("YumReposD", func(t *testing.T) {
+		SetupGomega(t)
+
+		t.Run("MountRepos", func(t *testing.T) {
+			SetupGomega(t)
+
+			reposBaseDir := t.TempDir()
+			testutil.WriteFileTree(t, reposBaseDir, map[string]string{
+				"repos1/a.repo": strings.Repeat("a", 10),
+				"repos1/b.repo": strings.Repeat("b", 10),
+				// will overwrite repos1/b.repo, verify by checking file size
+				"repos2/b.repo": strings.Repeat("b", 1000),
+				"repos2/c.repo": strings.Repeat("c", 10),
+				// only handles top-level files
+				"repos2/subdir/ignored-nested.repo": "ignored",
+			})
+			// skips symlinks
+			err := os.Symlink(
+				"../file-outside-mountpoint.txt",
+				filepath.Join(reposBaseDir, "repos2", "ignored-symlink.repo"),
+			)
+			Expect(err).ToNot(HaveOccurred())
+
+			contextDir := setupTestContext(t)
+			writeContainerfile(contextDir, fmt.Sprintf(`
+FROM %s
+
+RUN cd /etc/yum.repos.d && du -b * > /tmp/repos-during-build.txt
+
+# root should have permissions to write to /etc/yum.repos.d
+USER root
+RUN echo foo > /etc/yum.repos.d/foo.repo
+
+# for backwards compatibility, non-root should also have these permissions
+USER 2000
+RUN echo bar > /etc/yum.repos.d/bar.repo
+`, baseImage))
+
+			outputRef := "localhost/test-yum-repos-d:" + GenerateUniqueTag(t)
+
+			buildParams := BuildParams{
+				Context:          contextDir,
+				OutputRef:        outputRef,
+				Push:             false,
+				YumReposDSources: []string{"/repos/repos1", "/repos/repos2"},
+			}
+
+			container := setupBuildContainerWithCleanup(t, buildParams, nil,
+				WithVolumeWithOptions(reposBaseDir, "/repos", "z"))
+
+			err = runBuild(container, buildParams)
+			Expect(err).ToNot(HaveOccurred())
+
+			reposDuringBuild := runWithMountedOutputImage(container, outputRef,
+				"cat $CONTAINER_ROOT/tmp/repos-during-build.txt")
+			reposInBuiltImage := runWithMountedOutputImage(container, outputRef,
+				"cd $CONTAINER_ROOT/etc/yum.repos.d && du -b *")
+
+			Expect(reposDuringBuild).To(SatisfyAll(
+				// should have the mounted repos
+				MatchRegexp(`10\s+a.repo`),
+				MatchRegexp(`1000\s+b.repo`),
+				MatchRegexp(`10\s+c.repo`),
+				// and not files from subdirectories or symlinks
+				Not(ContainSubstring("ignored-nested.repo")),
+				Not(ContainSubstring("ignored-symlink.repo")),
+				// and not the original repos from the base image
+				Not(ContainSubstring("ubi.repo")),
+			))
+			Expect(reposInBuiltImage).To(SatisfyAll(
+				// should have the original repos from the base image
+				ContainSubstring("ubi.repo"),
+				// and not the mounted repos
+				Not(ContainSubstring("a.repo")),
+				Not(ContainSubstring("b.repo")),
+				Not(ContainSubstring("c.repo")),
+				// and not the repos created at build time
+				// (they're written to the mount, not the container FS)
+				Not(ContainSubstring("foo.repo")),
+				Not(ContainSubstring("bar.repo")),
+			))
+		})
+
+		t.Run("MountEmptyDir", func(t *testing.T) {
+			SetupGomega(t)
+
+			contextDir := setupTestContext(t)
+			writeContainerfile(contextDir, fmt.Sprintf(`
+FROM %s
+
+RUN ls -l /etc/yum.repos.d > /tmp/repos-during-build.txt
+`, baseImage))
+
+			emptyReposDir := t.TempDir()
+
+			outputRef := "localhost/test-yum-repos-d:" + GenerateUniqueTag(t)
+
+			buildParams := BuildParams{
+				Context:          contextDir,
+				OutputRef:        outputRef,
+				Push:             false,
+				YumReposDSources: []string{"/repos"},
+			}
+
+			container := setupBuildContainerWithCleanup(t, buildParams, nil,
+				WithVolumeWithOptions(emptyReposDir, "/repos", "z"))
+
+			err := runBuild(container, buildParams)
+			Expect(err).ToNot(HaveOccurred())
+
+			reposDuringBuild := runWithMountedOutputImage(container, outputRef,
+				"cat $CONTAINER_ROOT/tmp/repos-during-build.txt")
+			reposInBuiltImage := runWithMountedOutputImage(container, outputRef,
+				"cd $CONTAINER_ROOT/etc/yum.repos.d && ls")
+
+			Expect(strings.TrimSpace(reposDuringBuild)).To(Equal("total 0"))
+			Expect(reposInBuiltImage).To(ContainSubstring("ubi.repo"))
+		})
+
+		t.Run("DontMountAny", func(t *testing.T) {
+			SetupGomega(t)
+
+			contextDir := setupTestContext(t)
+			writeContainerfile(contextDir, fmt.Sprintf(`
+FROM %s
+
+RUN cd /etc/yum.repos.d && du -b * > /tmp/repos-during-build.txt
+`, baseImage))
+
+			outputRef := "localhost/test-yum-repos-d:" + GenerateUniqueTag(t)
+
+			buildParams := BuildParams{
+				Context:   contextDir,
+				OutputRef: outputRef,
+				Push:      false,
+			}
+
+			container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+			err := runBuild(container, buildParams)
+			Expect(err).ToNot(HaveOccurred())
+
+			reposDuringBuild := runWithMountedOutputImage(container, outputRef,
+				"cat $CONTAINER_ROOT/tmp/repos-during-build.txt")
+			reposInBuiltImage := runWithMountedOutputImage(container, outputRef,
+				"cd $CONTAINER_ROOT/etc/yum.repos.d && du -b *")
+
+			Expect(reposDuringBuild).To(ContainSubstring("ubi.repo"))
+			Expect(reposDuringBuild).To(Equal(reposInBuiltImage))
+		})
 	})
 }

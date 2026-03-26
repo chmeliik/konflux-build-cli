@@ -96,6 +96,16 @@ func Test_Build_validateParams(t *testing.T) {
 			errExpected:  true,
 			errSubstring: "are mutually exclusive",
 		},
+		{
+			name: "should fail when yum-repos-d-target is a relative path",
+			params: BuildParams{
+				OutputRef:       "quay.io/org/image:tag",
+				Context:         tempDir,
+				YumReposDTarget: "etc/yum.repos.d",
+			},
+			errExpected:  true,
+			errSubstring: "yum-repos-d-target must be an absolute path",
+		},
 	}
 
 	for _, tc := range tests {
@@ -1816,4 +1826,38 @@ func Test_Build_collectBaseImages(t *testing.T) {
 			}
 		})
 	}
+}
+
+func Test_chmodAddRWX(t *testing.T) {
+	g := NewWithT(t)
+
+	getPerm := func(path string) os.FileMode {
+		t.Helper()
+		info, err := os.Stat(path)
+		g.Expect(err).ToNot(HaveOccurred())
+		return info.Mode().Perm()
+	}
+
+	dir := t.TempDir()
+	root := filepath.Join(dir, "root")
+	g.Expect(os.Mkdir(root, 0700)).To(Succeed())
+
+	nested := filepath.Join(root, "nested")
+	g.Expect(os.Mkdir(nested, 0700)).To(Succeed())
+
+	regularFile := filepath.Join(nested, "data.txt")
+	g.Expect(os.WriteFile(regularFile, []byte("data"), 0600)).To(Succeed())
+
+	execFile := filepath.Join(nested, "run.sh")
+	g.Expect(os.WriteFile(execFile, []byte("#!/bin/sh"), 0700)).To(Succeed())
+
+	// Restrict root to 0600 (not traversable) after creating children
+	g.Expect(os.Chmod(root, 0600)).To(Succeed())
+
+	g.Expect(chmodAddRWX(root)).To(Succeed())
+
+	g.Expect(getPerm(root)).To(Equal(os.FileMode(0777)))
+	g.Expect(getPerm(nested)).To(Equal(os.FileMode(0777)))
+	g.Expect(getPerm(regularFile)).To(Equal(os.FileMode(0666)))
+	g.Expect(getPerm(execFile)).To(Equal(os.FileMode(0777)))
 }

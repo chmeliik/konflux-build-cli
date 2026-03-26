@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -234,6 +235,21 @@ var BuildParamsConfig = map[string]common.Parameter{
 		TypeKind:   reflect.String,
 		Usage:      "Set NO_PROXY for base image pulls.",
 	},
+	"yum-repos-d-sources": {
+		Name:       "yum-repos-d-sources",
+		ShortName:  "",
+		EnvVarName: "KBC_BUILD_YUM_REPOS_D_SOURCES",
+		TypeKind:   reflect.Slice,
+		Usage:      "List of yum.repos.d directories to merge together and mount over the yum-repos-d-target dir.",
+	},
+	"yum-repos-d-target": {
+		Name:         "yum-repos-d-target",
+		ShortName:    "",
+		EnvVarName:   "KBC_BUILD_YUM_REPOS_D_TARGET",
+		TypeKind:     reflect.String,
+		DefaultValue: "",
+		Usage:        "Set an alternative mount destination for the merged yum-repos-d-sources dir (default is /etc/yum.repos.d).",
+	},
 }
 
 type BuildParams struct {
@@ -265,6 +281,8 @@ type BuildParams struct {
 	Hermetic                   bool     `paramName:"hermetic"`
 	ImagePullProxy             string   `paramName:"image-pull-proxy"`
 	ImagePullNoProxy           string   `paramName:"image-pull-noproxy"`
+	YumReposDSources           []string `paramName:"yum-repos-d-sources"`
+	YumReposDTarget            string   `paramName:"yum-repos-d-target"`
 	ExtraArgs                  []string // Additional arguments to pass to buildah build
 }
 
@@ -290,6 +308,7 @@ type Build struct {
 
 	// pre-computed buildah arguments
 	buildahSecrets        []cliWrappers.BuildahSecret
+	buildahVolumes        []cliWrappers.BuildahVolume
 	mergedLabels          []string
 	mergedAnnotations     []string
 	buildinfoBuildContext *cliWrappers.BuildahBuildContext
@@ -420,6 +439,10 @@ func (c *Build) Run() error {
 		return err
 	}
 
+	if err := c.prepareYumReposMount(); err != nil {
+		return fmt.Errorf("preparing yum.repos.d mount: %w", err)
+	}
+
 	if !c.Params.SkipInjections {
 		if c.Params.Target != "" {
 			l.Logger.Warnf("Injecting buildinfo is not supported with --target. Skipping.")
@@ -478,6 +501,10 @@ func (c *Build) validateParams() error {
 
 	if c.Params.LegacyBuildTimestamp != "" && c.Params.SourceDateEpoch != "" {
 		return fmt.Errorf("legacy-build-timestamp and source-date-epoch are mutually exclusive")
+	}
+
+	if c.Params.YumReposDTarget != "" && !filepath.IsAbs(c.Params.YumReposDTarget) {
+		return fmt.Errorf("yum-repos-d-target must be an absolute path, got '%s'", c.Params.YumReposDTarget)
 	}
 
 	if c.Params.RewriteTimestamp && c.Params.SourceDateEpoch == "" {
@@ -647,6 +674,105 @@ func isRegular(entry os.DirEntry, dir string) (bool, error) {
 		return stat.Mode().IsRegular(), nil
 	}
 	return false, nil
+}
+
+// Copies regular files from all yum-repos-d-sources to a subdirectory in the tempWorkdir.
+// On filename conflict, the file found later replaces the one found earlier.
+//
+// Adds a buildahVolumes mount that mounts the subdirectory at yum-repos-d-target.
+func (c *Build) prepareYumReposMount() error {
+	if len(c.Params.YumReposDSources) == 0 {
+		return nil
+	}
+
+	if err := c.ensureTempWorkdirExists(); err != nil {
+		return err
+	}
+
+	mergedDir := filepath.Join(c.tempWorkdir, "yum.repos.d")
+	// For backwards compatibility, make the directory rwx to everyone.
+	// This enables any user inside the containerfile to write to the mount point.
+	if err := os.Mkdir(mergedDir, 0777); err != nil {
+		return fmt.Errorf("creating yum.repos.d/ in temporary workdir: %w", err)
+	}
+
+	seen := make(map[string]string) // filename -> source directory that provided it
+
+	for _, srcDir := range c.Params.YumReposDSources {
+		entries, err := os.ReadDir(srcDir)
+		if err != nil {
+			return fmt.Errorf("reading yum.repos.d source %s: %w", srcDir, err)
+		}
+
+		for _, entry := range entries {
+			if !entry.Type().IsRegular() {
+				// Also skips symlinks, there's no use for symlinks in yum.repos.d.
+				// Either they would point outside the directory, and we don't even want to allow that,
+				// or to a file in the same directory, duplicating it, which has no effect on dnf.
+				l.Logger.Warnf("yum.repos.d: skipping %s, not a regular file", filepath.Join(srcDir, entry.Name()))
+				continue
+			}
+
+			filename := entry.Name()
+			if prev, ok := seen[filename]; ok {
+				l.Logger.Warnf("yum.repos.d: %s from %s overwrites the one from %s", filename, srcDir, prev)
+			}
+			seen[filename] = srcDir
+
+			srcPath := filepath.Join(srcDir, filename)
+			dstPath := filepath.Join(mergedDir, filename)
+
+			content, err := os.ReadFile(srcPath)
+			if err != nil {
+				return fmt.Errorf("reading %s: %w", srcPath, err)
+			}
+			if err := os.WriteFile(dstPath, content, 0666); err != nil {
+				return fmt.Errorf("writing %s: %w", dstPath, err)
+			}
+
+			l.Logger.Infof("yum.repos.d: added %s from %s", filename, srcDir)
+		}
+	}
+
+	// We already attempt to use 777 for the directory and 666 for the files,
+	// but if we're inside a container, umask will likely strip the write bits for group and other.
+	// Chmod again to fix the permissions.
+	if err := chmodAddRWX(mergedDir); err != nil {
+		return fmt.Errorf("fixing yum.repos.d permissions: %w", err)
+	}
+
+	target := c.Params.YumReposDTarget
+	if target == "" {
+		target = "/etc/yum.repos.d"
+	}
+
+	c.buildahVolumes = append(c.buildahVolumes, cliWrappers.BuildahVolume{
+		HostDir:      mergedDir,
+		ContainerDir: target,
+		Options:      "z",
+	})
+
+	return nil
+}
+
+// Recursively adds read-write permissions, execute permission as well if the file
+// is a directory or has at least one execute bit already set (equivalent to 'chmod -R +rwX').
+func chmodAddRWX(rootDir string) error {
+	return filepath.WalkDir(rootDir, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		perm := info.Mode().Perm()
+		perm |= 0666 // +rw for user, group, other
+		if entry.IsDir() || info.Mode()&0111 != 0 {
+			perm |= 0111 // +x for user, group, other
+		}
+		return os.Chmod(path, perm)
+	})
 }
 
 func (c *Build) parseContainerfile() (*dockerfile.Dockerfile, error) {
@@ -1284,6 +1410,7 @@ func (c *Build) buildImage() error {
 		ContextDir:       c.Params.Context,
 		OutputRef:        c.Params.OutputRef,
 		Secrets:          c.buildahSecrets,
+		Volumes:          c.buildahVolumes,
 		BuildArgs:        c.Params.BuildArgs,
 		BuildArgsFile:    c.Params.BuildArgsFile,
 		Envs:             c.Params.Envs,
@@ -1298,9 +1425,8 @@ func (c *Build) buildImage() error {
 		Wrapper:          c.chooseBuildahWrappers(),
 	}
 	if c.Params.WorkdirMount != "" {
-		buildArgs.Volumes = []cliWrappers.BuildahVolume{
-			{HostDir: c.Params.Context, ContainerDir: c.Params.WorkdirMount, Options: "z"},
-		}
+		buildArgs.Volumes = append(buildArgs.Volumes, cliWrappers.BuildahVolume{
+			HostDir: c.Params.Context, ContainerDir: c.Params.WorkdirMount, Options: "z"})
 	}
 	if c.buildinfoBuildContext != nil {
 		buildArgs.BuildContexts = []cliWrappers.BuildahBuildContext{*c.buildinfoBuildContext}
