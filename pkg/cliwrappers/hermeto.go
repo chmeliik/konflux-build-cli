@@ -4,6 +4,7 @@ package cliwrappers
 
 import (
 	"errors"
+	"os"
 
 	"github.com/konflux-ci/konflux-build-cli/pkg/logger"
 )
@@ -19,9 +20,10 @@ type HermetoCliInterface interface {
 
 type HermetoCli struct {
 	Executor CliExecutorInterface
+	Env      []string // constructed as expected by exec.Cmd.Env
 }
 
-func NewHermetoCli(executor CliExecutorInterface) (*HermetoCli, error) {
+func NewHermetoCli(executor CliExecutorInterface, env []string) (*HermetoCli, error) {
 	hermetoCliAvailable, err := CheckCliToolAvailable("hermeto")
 	if err != nil {
 		return nil, err
@@ -31,7 +33,7 @@ func NewHermetoCli(executor CliExecutorInterface) (*HermetoCli, error) {
 		return nil, errors.New("hermeto CLI is not available")
 	}
 
-	return &HermetoCli{Executor: executor}, nil
+	return &HermetoCli{Executor: executor, Env: env}, nil
 }
 
 // Print the Hermeto version.
@@ -79,7 +81,8 @@ func (hc *HermetoCli) FetchDeps(params *HermetoFetchDepsParams) error {
 	)
 
 	log.Debugf("Executing %s", shellJoin("hermeto", args...))
-	_, _, _, err := hc.Executor.Execute(Cmd{Name: "hermeto", Args: args, LogOutput: true})
+	extendedEnv := append(os.Environ(), hc.Env...)
+	_, _, _, err := hc.Executor.Execute(Cmd{Name: "hermeto", Args: args, LogOutput: true, Env: extendedEnv})
 	return err
 }
 

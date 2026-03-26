@@ -95,18 +95,27 @@ var ParamsConfig = map[string]common.Parameter{
 		Usage:        "directory with git auth credentials (.git-credentials, .gitconfig or username/password)",
 		Required:     false,
 	},
+	"enable-package-registry-proxy": { // Pipeline-level registry proxy switch.
+		Name:         "enable-package-registry-proxy",
+		EnvVarName:   "KBC_PD_ENABLE_PACKAGE_REGISTRY_PROXY",
+		TypeKind:     reflect.Bool,
+		Usage:        "Pipeline-level enable package registry proxy. Defaults to true.",
+		DefaultValue: "true", // A pipeline will use a proxy unless explicitly told otherwise.
+		Required:     false,
+	},
 }
 
 type Params struct {
-	Input               string   `paramName:"input"`
-	SourceDir           string   `paramName:"source-dir"`
-	OutputDir           string   `paramName:"output-dir"`
-	ConfigFile          string   `paramName:"config-file"`
-	SBOMFormat          string   `paramName:"sbom-format"`
-	Mode                string   `paramName:"mode"`
-	OutputDirMountPoint string   `paramName:"output-dir-mount-point"`
-	EnvFiles            []string `paramName:"env-files"`
-	RHSMOrg             string   `paramName:"rhsm-org"`
-	RHSMActivationKey   string   `paramName:"rhsm-activation-key"`
-	GitAuthDirectory    string   `paramName:"git-auth-directory"`
+	Input                      string   `paramName:"input"`
+	SourceDir                  string   `paramName:"source-dir"`
+	OutputDir                  string   `paramName:"output-dir"`
+	ConfigFile                 string   `paramName:"config-file"`
+	SBOMFormat                 string   `paramName:"sbom-format"`
+	Mode                       string   `paramName:"mode"`
+	OutputDirMountPoint        string   `paramName:"output-dir-mount-point"`
+	EnvFiles                   []string `paramName:"env-files"`
+	RHSMOrg                    string   `paramName:"rhsm-org"`
+	RHSMActivationKey          string   `paramName:"rhsm-activation-key"`
+	GitAuthDirectory           string   `paramName:"git-auth-directory"`
+	EnablePackageRegistryProxy bool     `paramName:"enable-package-registry-proxy"`
 }

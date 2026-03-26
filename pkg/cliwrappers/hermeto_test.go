@@ -10,7 +10,8 @@ import (
 
 func setupHermetoCli() (*cliwrappers.HermetoCli, *mockExecutor) {
 	executor := &mockExecutor{}
-	hermetoCli := &cliwrappers.HermetoCli{Executor: executor}
+	emptyEnv := []string{}
+	hermetoCli := &cliwrappers.HermetoCli{Executor: executor, Env: emptyEnv}
 	return hermetoCli, executor
 }
 
