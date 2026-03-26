@@ -86,7 +86,6 @@ func (hc *HermetoCli) FetchDeps(params *HermetoFetchDepsParams) error {
 type HermetoGenerateEnvParams struct {
 	OutputDir    string
 	ForOutputDir string
-	Format       string
 	Output       string
 }
 
@@ -101,8 +100,6 @@ func (hc *HermetoCli) GenerateEnv(params *HermetoGenerateEnvParams) error {
 		params.OutputDir,
 		"--for-output-dir",
 		params.ForOutputDir,
-		"--format",
-		params.Format,
 		"--output",
 		params.Output,
 	}

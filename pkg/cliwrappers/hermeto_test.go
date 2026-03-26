@@ -94,24 +94,21 @@ func TestHermetoCliGenerateEnvArgs(t *testing.T) {
 	params := &cliwrappers.HermetoGenerateEnvParams{
 		OutputDir:    "/output",
 		ForOutputDir: "/tmp",
-		Format:       "env",
 		Output:       "/prefetch.env",
 	}
 
 	err := hermetoCli.GenerateEnv(params)
 	g.Expect(err).ToNot(HaveOccurred())
 
-	g.Expect(capturedArgs).To(HaveLen(10))
+	g.Expect(capturedArgs).To(HaveLen(8))
 	g.Expect(capturedArgs[0]).To(Equal("--log-level"))
 	g.Expect(capturedArgs[1]).ToNot(BeEmpty()) // log level value
 	g.Expect(capturedArgs[2]).To(Equal("generate-env"))
 	g.Expect(capturedArgs[3]).To(Equal("/output"))
 	g.Expect(capturedArgs[4]).To(Equal("--for-output-dir"))
 	g.Expect(capturedArgs[5]).To(Equal("/tmp"))
-	g.Expect(capturedArgs[6]).To(Equal("--format"))
-	g.Expect(capturedArgs[7]).To(Equal("env"))
-	g.Expect(capturedArgs[8]).To(Equal("--output"))
-	g.Expect(capturedArgs[9]).To(Equal("/prefetch.env"))
+	g.Expect(capturedArgs[6]).To(Equal("--output"))
+	g.Expect(capturedArgs[7]).To(Equal("/prefetch.env"))
 }
 
 func TestHermetoCliInjectFilesArgs(t *testing.T) {

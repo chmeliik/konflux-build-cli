@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	. "github.com/konflux-ci/konflux-build-cli/integration_tests/framework"
@@ -18,8 +19,10 @@ const (
 )
 
 type prefetchDependenciesTestParams struct {
-	Context string
-	Input   string
+	Context             string
+	Input               string
+	OutputDirMountPoint string
+	EnvFiles            []string
 }
 
 func cloneGitRepo(url, branch, output string) error {
@@ -66,6 +69,13 @@ func runPrefetchDependencies(params prefetchDependenciesTestParams) error {
 	args := []string{
 		"prefetch-dependencies",
 		"--input", params.Input,
+	}
+	if params.OutputDirMountPoint != "" {
+		args = append(args, "--output-dir-mount-point", params.OutputDirMountPoint)
+	}
+	if len(params.EnvFiles) > 0 {
+		args = append(args, "--env-files")
+		args = append(args, params.EnvFiles...)
 	}
 	return container.ExecuteBuildCli(args...)
 }
@@ -137,5 +147,44 @@ func TestPrefetchDependencies(t *testing.T) {
 		})
 		Expect(hermetoRepoCount).To(BeNumerically("==", 0))
 		Expect(cachi2RepoCount).To(BeNumerically(">", 0))
+	})
+
+	t.Run("should generate environment files with specified formats", func(t *testing.T) {
+		tempDir := setupContext(t)
+
+		branch := "gomod/without-deps"
+		repoPath := filepath.Join(tempDir, "repo")
+		Expect(cloneGitRepo(hermetoIntegrationTestsRepoURL, branch, repoPath)).To(Succeed())
+
+		params := prefetchDependenciesTestParams{
+			Context:             repoPath,
+			Input:               `{"packages": [{"type": "gomod"}]}`,
+			OutputDirMountPoint: "/tmp",
+			EnvFiles:            []string{"hermeto.env", "prefetch.env", "prefetch-env.json"},
+		}
+		Expect(runPrefetchDependencies(params)).To(Succeed())
+
+		// Check prefetch.env
+		envContent, err := os.ReadFile(filepath.Join(repoPath, "prefetch.env"))
+		Expect(err).ToNot(HaveOccurred())
+		envLines := strings.Split(string(envContent), "\n")
+		Expect(envLines).To(ContainElement("export GOMODCACHE=/tmp/deps/gomod/pkg/mod"))
+
+		// Check that hermeto.env is the same as prefetch.env
+		envContent2, err := os.ReadFile(filepath.Join(repoPath, "hermeto.env"))
+		Expect(err).ToNot(HaveOccurred())
+		Expect(envContent2).To(Equal(envContent))
+
+		// Check prefetch-env.json
+		jsonContent, err := os.ReadFile(filepath.Join(repoPath, "prefetch-env.json"))
+		Expect(err).ToNot(HaveOccurred())
+
+		type envVar struct {
+			Name  string `json:"name"`
+			Value string `json:"value"`
+		}
+		var jsonEnvData []envVar
+		Expect(json.Unmarshal(jsonContent, &jsonEnvData)).To(Succeed())
+		Expect(jsonEnvData).To(ContainElement(envVar{"GOMODCACHE", "/tmp/deps/gomod/pkg/mod"}))
 	})
 }

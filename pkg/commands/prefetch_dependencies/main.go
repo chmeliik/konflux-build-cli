@@ -84,14 +84,15 @@ func (pd *PrefetchDependencies) Run() error {
 		return fmt.Errorf("hermeto fetch-deps command failed: %w", err)
 	}
 
-	generateEnvParams := cliwrappers.HermetoGenerateEnvParams{
-		OutputDir:    pd.Config.OutputDir,
-		ForOutputDir: pd.Config.OutputDirMountPoint,
-		Format:       "env",
-		Output:       pd.Config.EnvFile,
-	}
-	if err := pd.HermetoCli.GenerateEnv(&generateEnvParams); err != nil {
-		return fmt.Errorf("hermeto generate-env command failed: %w", err)
+	for _, envFile := range pd.Config.EnvFiles {
+		generateEnvParams := cliwrappers.HermetoGenerateEnvParams{
+			OutputDir:    pd.Config.OutputDir,
+			ForOutputDir: pd.Config.OutputDirMountPoint,
+			Output:       envFile,
+		}
+		if err := pd.HermetoCli.GenerateEnv(&generateEnvParams); err != nil {
+			return fmt.Errorf("hermeto generate-env command failed: %w", err)
+		}
 	}
 
 	injectFilesParams := cliwrappers.HermetoInjectFilesParams{

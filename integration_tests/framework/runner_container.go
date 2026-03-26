@@ -14,6 +14,7 @@ import (
 
 const (
 	ResultsPathInContainer = "/tmp/"
+	kbcPathInContainer     = "/usr/bin/" + KonfluxBuildCli
 )
 
 type ContainerStatus int
@@ -76,7 +77,7 @@ func NewTestRunnerContainer(name, image string, opts ...ContainerOption) *TestRu
 func NewBuildCliRunnerContainer(name, image string, opts ...ContainerOption) *TestRunnerContainer {
 	container := NewTestRunnerContainer(name, image, opts...)
 
-	container.AddVolumeWithOptions(GetCliBinPath(), path.Join("/usr/bin/", KonfluxBuildCli), "z")
+	container.AddVolumeWithOptions(GetCliBinPath(), kbcPathInContainer, "z")
 	container.AddNetwork("host")
 	if Debug {
 		container.AddPort("2345", "2345")
@@ -335,7 +336,7 @@ func (c *TestRunnerContainer) ExecuteBuildCli(args ...string) error {
 	if Debug {
 		return c.debugBuildCli(args...)
 	}
-	return c.ExecuteCommand(KonfluxBuildCli, args...)
+	return c.ExecuteCommand(kbcPathInContainer, args...)
 }
 
 // ExecuteCommandWithOutput executes a command in the container and returns
@@ -372,7 +373,7 @@ func (c *TestRunnerContainer) debugBuildCli(cliArgs ...string) error {
 	}
 
 	execArgs := []string{"exec", c.name}
-	execArgs = append(execArgs, "dlv", "--listen=0.0.0.0:2345", "--headless=true", "--log=true", "--api-version=2", "exec", "/usr/bin/"+KonfluxBuildCli)
+	execArgs = append(execArgs, "dlv", "--listen=0.0.0.0:2345", "--headless=true", "--log=true", "--api-version=2", "exec", kbcPathInContainer)
 	if len(cliArgs) > 0 {
 		execArgs = append(execArgs, "--")
 		execArgs = append(execArgs, cliArgs...)

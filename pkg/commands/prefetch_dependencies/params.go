@@ -63,12 +63,12 @@ var ParamsConfig = map[string]common.Parameter{
 		Usage:        "directory where output directory will be mounted in a container for hermetic build",
 		Required:     false,
 	},
-	"env-file": {
-		Name:         "env-file",
-		TypeKind:     reflect.String,
-		EnvVarName:   "KBC_PD_ENV_FILE",
+	"env-files": {
+		Name:         "env-files",
+		TypeKind:     reflect.Slice,
+		EnvVarName:   "KBC_PD_ENV_FILES",
 		DefaultValue: "./prefetch.env",
-		Usage:        "path to file where environment variables for hermetic build will be written",
+		Usage:        "paths to files where environment variables for hermetic build will be written, format is inferred from file suffix",
 		Required:     false,
 	},
 	"rhsm-org": {
@@ -98,15 +98,15 @@ var ParamsConfig = map[string]common.Parameter{
 }
 
 type Params struct {
-	Input               string `paramName:"input"`
-	SourceDir           string `paramName:"source-dir"`
-	OutputDir           string `paramName:"output-dir"`
-	ConfigFile          string `paramName:"config-file"`
-	SBOMFormat          string `paramName:"sbom-format"`
-	Mode                string `paramName:"mode"`
-	OutputDirMountPoint string `paramName:"output-dir-mount-point"`
-	EnvFile             string `paramName:"env-file"`
-	RHSMOrg             string `paramName:"rhsm-org"`
-	RHSMActivationKey   string `paramName:"rhsm-activation-key"`
-	GitAuthDirectory    string `paramName:"git-auth-directory"`
+	Input               string   `paramName:"input"`
+	SourceDir           string   `paramName:"source-dir"`
+	OutputDir           string   `paramName:"output-dir"`
+	ConfigFile          string   `paramName:"config-file"`
+	SBOMFormat          string   `paramName:"sbom-format"`
+	Mode                string   `paramName:"mode"`
+	OutputDirMountPoint string   `paramName:"output-dir-mount-point"`
+	EnvFiles            []string `paramName:"env-files"`
+	RHSMOrg             string   `paramName:"rhsm-org"`
+	RHSMActivationKey   string   `paramName:"rhsm-activation-key"`
+	GitAuthDirectory    string   `paramName:"git-auth-directory"`
 }
