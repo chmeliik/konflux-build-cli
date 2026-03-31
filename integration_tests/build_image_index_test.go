@@ -36,7 +36,12 @@ type BuildImageIndexResults struct {
 	Images      string `json:"images"`
 }
 
-func RunBuildImageIndex(params BuildImageIndexParams, imageRegistry ImageRegistry, cleanupContainer bool) (*BuildImageIndexResults, *TestRunnerContainer, error) {
+type RunBuildImageIndexOutput struct {
+	Results *BuildImageIndexResults
+	Stderr  string
+}
+
+func RunBuildImageIndex(params BuildImageIndexParams, imageRegistry ImageRegistry, cleanupContainer bool) (*RunBuildImageIndexOutput, *TestRunnerContainer, error) {
 	var err error
 
 	container := NewBuildCliRunnerContainer("build-image-index", BuildImageIndexImage)
@@ -94,7 +99,7 @@ func RunBuildImageIndex(params BuildImageIndexParams, imageRegistry ImageRegistr
 		return nil, container, fmt.Errorf("failed to parse results JSON (stderr: %s): %w", stderr, err)
 	}
 
-	return &results, container, nil
+	return &RunBuildImageIndexOutput{Results: &results, Stderr: stderr}, container, nil
 }
 
 func TestBuildImageIndex_MultipleImages(t *testing.T) {
@@ -160,8 +165,9 @@ func TestBuildImageIndex_MultipleImages(t *testing.T) {
 		AdditionalTags:   []string{"test-tag-1"},
 	}
 
-	results, _, err := RunBuildImageIndex(params, imageRegistry, true)
+	output, _, err := RunBuildImageIndex(params, imageRegistry, true)
 	Expect(err).ToNot(HaveOccurred())
+	results := output.Results
 
 	// Verify results
 	Expect(results.ImageURL).To(Equal(indexImage))
@@ -269,8 +275,9 @@ func TestBuildImageIndex_DockerFormat(t *testing.T) {
 		BuildahFormat: "docker",
 	}
 
-	results, _, err := RunBuildImageIndex(params, imageRegistry, true)
+	output, _, err := RunBuildImageIndex(params, imageRegistry, true)
 	Expect(err).ToNot(HaveOccurred())
+	results := output.Results
 
 	// Verify results
 	Expect(results.ImageURL).To(Equal(indexImage))
@@ -391,8 +398,9 @@ func TestBuildImageIndex_SingleImageAlwaysBuildIndex(t *testing.T) {
 		AlwaysBuildIndex: boolptr(true),
 	}
 
-	results, _, err := RunBuildImageIndex(params, imageRegistry, true)
+	output, _, err := RunBuildImageIndex(params, imageRegistry, true)
 	Expect(err).ToNot(HaveOccurred())
+	results := output.Results
 
 	// Verify results
 	Expect(results.ImageURL).To(Equal(indexImage))
@@ -493,8 +501,9 @@ func TestBuildImageIndex_ResultPaths(t *testing.T) {
 	}
 
 	// Don't cleanup container automatically - we need to read result files first
-	results, container, err := RunBuildImageIndex(params, imageRegistry, false)
+	output, container, err := RunBuildImageIndex(params, imageRegistry, false)
 	Expect(err).ToNot(HaveOccurred())
+	results := output.Results
 	defer container.DeleteIfExists()
 
 	// Verify result files were created and contain correct content
@@ -580,4 +589,118 @@ func TestBuildImageIndex_FormatMismatch(t *testing.T) {
 	_, _, err = RunBuildImageIndex(params, imageRegistry, true)
 	Expect(err).To(HaveOccurred())
 	Expect(err.Error()).To(ContainSubstring("platform image contains docker format, but index will be oci"))
+}
+
+func TestBuildImageIndex_ImagesWithTagAndDigest(t *testing.T) {
+	SetupGomega(t)
+	var err error
+
+	// Setup registry
+	imageRegistry := NewImageRegistry()
+	err = imageRegistry.Prepare()
+	Expect(err).ToNot(HaveOccurred())
+	err = imageRegistry.Start()
+	Expect(err).ToNot(HaveOccurred())
+	defer imageRegistry.Stop()
+
+	// Create input data
+	baseImageRepo := imageRegistry.GetTestNamespace() + "test-tag-and-digest"
+	tag := GenerateUniqueTag(t)
+	indexImage := baseImageRepo + ":" + tag
+
+	// Create and push two platform images
+	image1Ref := baseImageRepo + "-platform1:" + tag
+	image2Ref := baseImageRepo + "-platform2:" + tag
+
+	err = CreateTestImage(TestImageConfig{
+		ImageRef:       image1Ref,
+		RandomDataSize: 1024,
+		Labels: map[string]string{
+			"platform": "amd64",
+		},
+	})
+	Expect(err).ToNot(HaveOccurred())
+	defer DeleteLocalImage(image1Ref)
+
+	err = CreateTestImage(TestImageConfig{
+		ImageRef:       image2Ref,
+		RandomDataSize: 2048,
+		Labels: map[string]string{
+			"platform": "arm64",
+		},
+	})
+	Expect(err).ToNot(HaveOccurred())
+	defer DeleteLocalImage(image2Ref)
+
+	digest1, err := PushImage(image1Ref)
+	Expect(err).ToNot(HaveOccurred())
+
+	digest2, err := PushImage(image2Ref)
+	Expect(err).ToNot(HaveOccurred())
+
+	// Use tag+digest format (repo:tag@sha256:digest) to test
+	// that the references are normalized to repo@digest, as
+	// buildah does not support the tag+digest format unless the image
+	// is available locally
+	image1WithTagAndDigest := image1Ref + "@" + digest1
+	image2WithTagAndDigest := image2Ref + "@" + digest2
+
+	params := BuildImageIndexParams{
+		Image:            indexImage,
+		Images:           []string{image1WithTagAndDigest, image2WithTagAndDigest},
+		TLSVerify:        boolptr(true),
+		BuildahFormat:    "oci",
+		AlwaysBuildIndex: boolptr(true),
+	}
+
+	output, _, err := RunBuildImageIndex(params, imageRegistry, true)
+	Expect(err).ToNot(HaveOccurred())
+	results := output.Results
+
+	// Verify that buildah manifest add was called with normalized references
+	// (docker://repo@digest, tag stripped)
+	imageRepo1 := common.GetImageName(image1Ref)
+	imageRepo2 := common.GetImageName(image2Ref)
+	Expect(output.Stderr).To(ContainSubstring(
+		"buildah manifest add " + indexImage + " docker://" + imageRepo1 + "@" + digest1))
+	Expect(output.Stderr).To(ContainSubstring(
+		"buildah manifest add " + indexImage + " docker://" + imageRepo2 + "@" + digest2))
+
+	// Verify results
+	Expect(results.ImageURL).To(Equal(indexImage))
+	Expect(results.ImageDigest).ToNot(BeEmpty())
+	Expect(results.ImageDigest).To(HavePrefix("sha256:"))
+	Expect(results.ImageRef).To(Equal(baseImageRepo + "@" + results.ImageDigest))
+
+	// Images should contain both platform image digests (order may vary)
+	Expect(results.Images).To(Or(
+		Equal(baseImageRepo+"@"+digest1+","+baseImageRepo+"@"+digest2),
+		Equal(baseImageRepo+"@"+digest2+","+baseImageRepo+"@"+digest1),
+	))
+
+	// Verify the index was pushed to registry
+	tagExists, err := imageRegistry.CheckTagExistance(baseImageRepo, tag)
+	Expect(err).ToNot(HaveOccurred())
+	Expect(tagExists).To(BeTrue(), fmt.Sprintf("Expected %s to exist", indexImage))
+
+	// Verify the manifest is actually an index (multi-arch)
+	imageIndexInfo, err := imageRegistry.GetImageIndexInfo(baseImageRepo, tag)
+	Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("failed to get image index %s:%s", baseImageRepo, tag))
+	Expect(imageIndexInfo.MediaType).To(Equal("application/vnd.oci.image.index.v1+json"),
+		"Created reference is not an OCI image index")
+	Expect(imageIndexInfo.Manifests).To(HaveLen(2))
+
+	// Verify platform manifests are OCI format and extract digests
+	obtainedDigests := make([]string, 0, 2)
+	for _, manifestInfo := range imageIndexInfo.Manifests {
+		Expect(manifestInfo.MediaType).To(Equal("application/vnd.oci.image.manifest.v1+json"))
+		obtainedDigests = append(obtainedDigests, manifestInfo.Digest)
+	}
+
+	// Check that platform image digests are included in the index
+	Expect(obtainedDigests).To(ConsistOf(digest1, digest2))
+
+	// Verify the digest matches the actual manifest digest
+	actualDigest := fmt.Sprintf("sha256:%x", sha256.Sum256(imageIndexInfo.RawManifest))
+	Expect(results.ImageDigest).To(Equal(actualDigest))
 }

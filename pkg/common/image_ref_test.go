@@ -317,6 +317,54 @@ func Test_ImageRefUntils_IsImageTagValid(t *testing.T) {
 	}
 }
 
+func Test_ImageRefUntils_NormalizeImageRefWithDigest(t *testing.T) {
+	tests := []struct {
+		name  string
+		image string
+		want  string
+	}{
+		{
+			name:  "image with only digest should remain unchanged",
+			image: "registry.io/namespace/image@sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a",
+			want:  "registry.io/namespace/image@sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a",
+		},
+		{
+			name:  "image with only tag should remain unchanged",
+			image: "registry.io/namespace/image:tag",
+			want:  "registry.io/namespace/image:tag",
+		},
+		{
+			name:  "image with tag and digest should strip tag",
+			image: "registry.io/namespace/image:tag@sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a",
+			want:  "registry.io/namespace/image@sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a",
+		},
+		{
+			name:  "image with numeric tag and digest should strip tag",
+			image: "registry.io:5000/namespace/image:12345@sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a",
+			want:  "registry.io:5000/namespace/image@sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a",
+		},
+		{
+			name:  "image ref without registry. With tag and digest, should strip tag",
+			image: "image:v1.0.0@sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a",
+			want:  "image@sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a",
+		},
+		{
+			name:  "image without tag or digest should remain unchanged",
+			image: "registry.io/namespace/image",
+			want:  "registry.io/namespace/image",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := common.NormalizeImageRefWithDigest(tc.image)
+			if got != tc.want {
+				t.Errorf("For %s expected %s, but got: %s", tc.image, tc.want, got)
+			}
+		})
+	}
+}
+
 func Test_ImageRefUntils_GetImageDigest(t *testing.T) {
 	tests := []struct {
 		name  string

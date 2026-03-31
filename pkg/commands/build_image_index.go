@@ -231,22 +231,26 @@ func (c *BuildImageIndex) buildManifestIndex() error {
 	}
 
 	for _, imageRef := range c.Params.Images {
+		// Normalize the image reference to strip the tag when both tag and digest are present.
+		// buildah does not support the repository:tag@digest format unless the image is available locally.
+		normalizedRef := common.NormalizeImageRefWithDigest(imageRef)
+
 		// Special case: single image with always-build-index=false
 		if !c.Params.AlwaysBuildIndex && len(c.Params.Images) == 1 {
 			l.Logger.Info("Skipping image index generation. Returning results for single image.")
-			c.images = []string{imageRef}
-			c.imageDigest = common.GetImageDigest(imageRef)
+			c.images = []string{normalizedRef}
+			c.imageDigest = common.GetImageDigest(normalizedRef)
 			return nil
 		}
 
-		l.Logger.Infof("Adding image to manifest: %s", imageRef)
+		l.Logger.Infof("Adding image to manifest: %s", normalizedRef)
 		err = c.CliWrappers.BuildahCli.ManifestAdd(&cliwrappers.BuildahManifestAddArgs{
 			ManifestName: c.Params.Image,
-			ImageRef:     imageRef,
+			ImageRef:     "docker://" + normalizedRef,
 			All:          true,
 		})
 		if err != nil {
-			return fmt.Errorf("failed to add image %s: %w", imageRef, err)
+			return fmt.Errorf("failed to add image %s: %w", normalizedRef, err)
 		}
 	}
 

@@ -39,6 +39,38 @@ func IsImageDigestValid(digest string) bool {
 	return err == nil
 }
 
+// NormalizeImageRefWithDigest converts an image reference to name@digest format.
+// If the reference has both a tag and digest (e.g., registry/repo:tag@sha256:abc),
+// it strips the tag and returns only name@digest (e.g., registry/repo@sha256:abc).
+// This is necessary because buildah doesn't support the tag+digest format when
+// used with the docker:// prefix. Returns the original reference if it doesn't
+// have a digest or if parsing fails.
+func NormalizeImageRefWithDigest(imageRef string) string {
+	ref, err := reference.Parse(imageRef)
+	if err != nil {
+		return imageRef
+	}
+
+	// Check if the reference has a digest
+	canonical, ok := ref.(reference.Canonical)
+	if !ok {
+		return imageRef
+	}
+
+	// Get the base named reference (without tag)
+	named := canonical.(reference.Named)
+	// TrimNamed removes any tag from the named reference
+	baseName := reference.TrimNamed(named)
+
+	// Create a new canonical reference with just name@digest
+	normalized, err := reference.WithDigest(baseName, canonical.Digest())
+	if err != nil {
+		return imageRef
+	}
+
+	return normalized.String()
+}
+
 // GetImageDigest extracts the digest from an image reference.
 // Returns the digest string (e.g., "sha256:abc123...") or empty string if no digest.
 func GetImageDigest(imageRef string) string {
