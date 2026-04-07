@@ -1641,11 +1641,15 @@ RUN echo "this instruction also creates an intermediate layer" > /tmp/bar.txt
 
 			writeContainerfile(contextDir, fmt.Sprintf(`
 # This stage is unused, because the second stage1 overrides it
-FROM scratch AS stage1
-
-LABEL stage1.label=this-stage-is-unused
-LABEL common.build.label=this-stage-is-unused
-LABEL common.label=this-stage-is-unused
+# ...but only sometimes. It appears buildah's behavior is not deterministic.
+# Dropping the first stage1 until https://github.com/containers/buildah/issues/6731
+# is fixed and we get an updated version of buildah.
+# (We'll know because the WithTarget test will need an update when that happens.)
+#FROM scratch AS stage1
+#
+#LABEL stage1.label=this-stage-is-unused
+#LABEL common.build.label=this-stage-is-unused
+#LABEL common.label=this-stage-is-unused
 
 
 # Real base image
