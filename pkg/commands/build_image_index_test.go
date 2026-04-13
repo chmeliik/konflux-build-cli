@@ -23,7 +23,7 @@ func Test_BuildImageIndex_validateParams(t *testing.T) {
 			params: BuildImageIndexParams{
 				Image:            "quay.io/org/myapp:latest",
 				Images:           []string{"quay.io/org/myapp@" + validDigest1},
-				BuildahFormat:           "oci",
+				BuildahFormat:    "oci",
 				AlwaysBuildIndex: true,
 			},
 			errExpected: false,
@@ -36,7 +36,7 @@ func Test_BuildImageIndex_validateParams(t *testing.T) {
 					"quay.io/org/myapp@" + validDigest1,
 					"quay.io/org/myapp@" + validDigest2,
 				},
-				BuildahFormat:           "oci",
+				BuildahFormat:    "oci",
 				AlwaysBuildIndex: true,
 			},
 			errExpected: false,
@@ -46,7 +46,7 @@ func Test_BuildImageIndex_validateParams(t *testing.T) {
 			params: BuildImageIndexParams{
 				Image:            "quay.io/org/myapp:latest",
 				Images:           []string{"quay.io/org/myapp@" + validDigest1},
-				BuildahFormat:           "docker",
+				BuildahFormat:    "docker",
 				AlwaysBuildIndex: true,
 			},
 			errExpected: false,
@@ -54,8 +54,8 @@ func Test_BuildImageIndex_validateParams(t *testing.T) {
 		{
 			name: "should fail on invalid image name",
 			params: BuildImageIndexParams{
-				Image:  "Invalid Image Name",
-				Images: []string{"quay.io/org/myapp@sha256:abc123"},
+				Image:         "Invalid Image Name",
+				Images:        []string{"quay.io/org/myapp@sha256:abc123"},
 				BuildahFormat: "oci",
 			},
 			errExpected:  true,
@@ -64,8 +64,8 @@ func Test_BuildImageIndex_validateParams(t *testing.T) {
 		{
 			name: "should fail on empty images list",
 			params: BuildImageIndexParams{
-				Image:  "quay.io/org/myapp:latest",
-				Images: []string{},
+				Image:         "quay.io/org/myapp:latest",
+				Images:        []string{},
 				BuildahFormat: "oci",
 			},
 			errExpected:  true,
@@ -74,8 +74,8 @@ func Test_BuildImageIndex_validateParams(t *testing.T) {
 		{
 			name: "should fail on invalid format",
 			params: BuildImageIndexParams{
-				Image:  "quay.io/org/myapp:latest",
-				Images: []string{"quay.io/org/myapp@" + validDigest1},
+				Image:         "quay.io/org/myapp:latest",
+				Images:        []string{"quay.io/org/myapp@" + validDigest1},
 				BuildahFormat: "invalid",
 			},
 			errExpected:  true,
@@ -84,8 +84,8 @@ func Test_BuildImageIndex_validateParams(t *testing.T) {
 		{
 			name: "should fail on invalid image reference in images list",
 			params: BuildImageIndexParams{
-				Image:  "quay.io/org/myapp:latest",
-				Images: []string{"Invalid Image Ref"},
+				Image:         "quay.io/org/myapp:latest",
+				Images:        []string{"Invalid Image Ref"},
 				BuildahFormat: "oci",
 			},
 			errExpected:  true,
@@ -96,7 +96,7 @@ func Test_BuildImageIndex_validateParams(t *testing.T) {
 			params: BuildImageIndexParams{
 				Image:            "quay.io/org/myapp:latest",
 				Images:           []string{"quay.io/org/myapp@" + validDigest1},
-				BuildahFormat:           "oci",
+				BuildahFormat:    "oci",
 				AlwaysBuildIndex: false,
 			},
 			errExpected: false,
@@ -106,7 +106,7 @@ func Test_BuildImageIndex_validateParams(t *testing.T) {
 			params: BuildImageIndexParams{
 				Image:            "quay.io/org/myapp:latest",
 				Images:           []string{"quay.io/org/myapp@" + validDigest1},
-				BuildahFormat:           "oci",
+				BuildahFormat:    "oci",
 				AlwaysBuildIndex: true,
 			},
 			errExpected: false,
@@ -266,12 +266,12 @@ func Test_BuildImageIndex_extractPlatformImages(t *testing.T) {
 	const digest2 = "sha256:bbb222bbb222bbb222bbb222bbb222bbb222bbb222bbb222bbb222bbb222bbb2"
 
 	tests := []struct {
-		name          string
-		imageName     string
-		manifestJson  string
-		expected      []string
-		errExpected   bool
-		errSubstring  string
+		name         string
+		imageName    string
+		manifestJson string
+		expected     []string
+		errExpected  bool
+		errSubstring string
 	}{
 		{
 			name:      "should extract multiple platform images",

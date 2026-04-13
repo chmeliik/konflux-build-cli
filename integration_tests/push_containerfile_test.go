@@ -218,7 +218,7 @@ func TestPushContainerfile(t *testing.T) {
 			if title, exists := layerAnnotations["org.opencontainers.image.title"]; exists {
 				g.Expect(title).Should(Equal(tc.expectedTitleAnnotationValue))
 			}
-			g.Expect(string(layerDescriptor.Digest)).Should(Equal("sha256:"+tc.expectedContainerfileDigest))
+			g.Expect(string(layerDescriptor.Digest)).Should(Equal("sha256:" + tc.expectedContainerfileDigest))
 
 			expectedArtifactType := tc.params.artifactType
 			if expectedArtifactType == "" {

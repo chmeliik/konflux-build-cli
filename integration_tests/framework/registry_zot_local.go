@@ -27,7 +27,7 @@ const (
 	zotRegistryDefaultPort   = "5000"
 	zotRegistryUser          = "zotuser"
 	zotRegistryPassword      = "zotpassword"
-	zotRegistryStorageVolume  = true
+	zotRegistryStorageVolume = true
 
 	zotConfigDataDir    = "zotdata"
 	zotConfigFileName   = "zot-config.json"

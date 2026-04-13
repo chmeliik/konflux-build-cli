@@ -16,7 +16,7 @@ var InUserNamespaceCmd = &cobra.Command{
 Flags must come before the command. Everything after the first
 non-flag argument (or after --) is passed to the command as-is.`,
 	Example: `  buildah unshare -- unshare --net -- konflux-build-cli internal in-user-namespace --loopback-up -- buildah build .`,
-	Args: cobra.ArbitraryArgs,
+	Args:    cobra.ArbitraryArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		loopbackUp, _ := cmd.Flags().GetBool("loopback-up")
 		if err := commands.RunInUserNamespace(loopbackUp, args); err != nil {

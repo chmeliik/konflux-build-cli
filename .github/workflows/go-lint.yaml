@@ -1,4 +1,4 @@
-name: go mod tidy
+name: go lint
 
 "on":
   pull_request:
@@ -6,7 +6,7 @@ name: go mod tidy
       - main
 
 jobs:
-  gomod-tidy:
+  go-lint:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -19,6 +19,20 @@ jobs:
         uses: actions/setup-go@7a3fe6cf4cb3a834922a1244abfce67bcef6a0c5 # v6.2.0
         with:
           go-version-file: go.mod
+
+      - name: Check formatting
+        run: |
+          #!/bin/bash
+          set -o errexit -o nounset -o pipefail
+
+          unformatted=$(gofmt -l .)
+
+          if [ -n "$unformatted" ]; then
+            echo "::error::The following files are not formatted:"
+            echo "$unformatted"
+            echo "Please run 'gofmt -w .' and commit the changes."
+            exit 1
+          fi
 
       - name: Check if dependencies are tidy
         run: |
