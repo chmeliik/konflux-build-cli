@@ -21,6 +21,7 @@ import (
 	"github.com/konflux-ci/konflux-build-cli/pkg/common"
 	dfeditor "github.com/konflux-ci/konflux-build-cli/pkg/common/containerfile_editor"
 	"github.com/opencontainers/go-digest"
+	"github.com/package-url/packageurl-go"
 	"github.com/spf13/cobra"
 
 	"github.com/containerd/platforms"
@@ -521,7 +522,7 @@ func (c *Build) Run() error {
 	if !c.Params.SkipInjections {
 		if c.Params.Target != "" {
 			l.Logger.Warnf("Injecting buildinfo is not supported with --target. Skipping.")
-		} else if err := c.injectBuildinfo(containerfile, c.mergedLabels); err != nil {
+		} else if err := c.injectBuildinfo(containerfile, c.mergedLabels, prefetchResources); err != nil {
 			return fmt.Errorf("injecting buildinfo metadata: %w", err)
 		}
 	}
@@ -767,6 +768,7 @@ type prefetchResources struct {
 	outputDir string
 	envFile   string
 	yumReposD string
+	sbomFile  string
 }
 
 func findPrefetchResources(prefetchDir string) (*prefetchResources, error) {
@@ -798,6 +800,14 @@ func findPrefetchResources(prefetchDir string) (*prefetchResources, error) {
 	if _, err := os.Lstat(reposD); err == nil {
 		l.Logger.Debugf("Found prefetch yum repos for current architecture: %s", reposD)
 		resources.yumReposD = reposD
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+
+	sbomFile := filepath.Join(prefetchDir, "output", "bom.json")
+	if _, err := os.Lstat(sbomFile); err == nil {
+		l.Logger.Debugf("Found prefetch SBOM: %s", sbomFile)
+		resources.sbomFile = sbomFile
 	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
@@ -1344,7 +1354,8 @@ func goArchToRpmArch(goarch string) string {
 //
 // Injected files:
 // - labels.json: contains the labels of the resulting image, needed for the Clair scanning tool
-func (c *Build) injectBuildinfo(df *dockerfile.Dockerfile, userLabels []string) error {
+// - content-sets.json: contains the names of RPM repositories used for prefetching, needed for Clair
+func (c *Build) injectBuildinfo(df *dockerfile.Dockerfile, userLabels []string, prefetchResources *prefetchResources) error {
 	// Create buildinfo directory in the temporary workdir and add it as a --build-context
 	buildinfoDir, err := c.createBuildinfoDir()
 	if err != nil {
@@ -1363,6 +1374,20 @@ func (c *Build) injectBuildinfo(df *dockerfile.Dockerfile, userLabels []string) 
 
 	if err := c.ensureContainerfileCopied(); err != nil {
 		return err
+	}
+
+	if prefetchResources != nil && prefetchResources.sbomFile != "" {
+		// Create content-sets.json in buildinfo dir
+		contentSets, err := determineContentSets(prefetchResources.sbomFile)
+		if err != nil {
+			return fmt.Errorf("determining content sets for content-sets.json: %w", err)
+		}
+		if err := writeBuildinfoJSON(buildinfoDir, contentSets, "content-sets.json"); err != nil {
+			return fmt.Errorf("writing content-sets.json to buildinfo dir: %w", err)
+		}
+		l.Logger.Info("Injecting buildinfo: added content-sets.json")
+	} else {
+		l.Logger.Info("Injecting buildinfo: no prefetch SBOM found, not adding content-sets.json")
 	}
 
 	appendLines := []string{"COPY --from=.konflux-buildinfo . /usr/share/buildinfo/"}
@@ -1423,6 +1448,77 @@ func appendToFile(filePath, content string) error {
 		return err
 	}
 	return file.Close()
+}
+
+// Collect all repository_id qualifiers from the purls in the prefetch SBOM (the "content sets").
+// Return them wrapped in a "content manifest" (a deprecated format still needed by Clair).
+// https://github.com/konflux-ci/buildah-container/blob/5fd8a4b1163079c7978e79100ec51b41504e0f20/scripts/icm-injection-scripts/inject-icm.sh
+func determineContentSets(prefetchSbomFile string) (map[string]any, error) {
+	sbomContent, err := os.ReadFile(prefetchSbomFile)
+	if err != nil {
+		return nil, fmt.Errorf("reading prefetch SBOM: %w", err)
+	}
+
+	var sbom struct {
+		// CycloneDX
+		BomFormat  string `json:"bomFormat"`
+		Components []struct {
+			Purl string `json:"purl"`
+		} `json:"components"`
+		// SPDX
+		Packages []struct {
+			ExternalRefs []struct {
+				ReferenceType    string `json:"referenceType"`
+				ReferenceLocator string `json:"referenceLocator"`
+			} `json:"externalRefs"`
+		} `json:"packages"`
+	}
+
+	if err := json.Unmarshal(sbomContent, &sbom); err != nil {
+		return nil, fmt.Errorf("unmarshalling prefetch SBOM: %w", err)
+	}
+
+	contentSets := make(map[string]struct{})
+
+	processPurl := func(purl string) {
+		parsedPurl, err := packageurl.FromString(purl)
+		if err != nil {
+			// For compatibility with the original script, don't abort on broken purls
+			l.Logger.Warnf("Constructing content-sets.json: failed to parse %s as purl, skipping: %s", purl, err)
+			return
+		}
+		for _, qualifier := range parsedPurl.Qualifiers {
+			if qualifier.Key == "repository_id" {
+				contentSets[qualifier.Value] = struct{}{}
+			}
+		}
+	}
+
+	if sbom.BomFormat == "CycloneDX" {
+		for _, component := range sbom.Components {
+			processPurl(component.Purl)
+		}
+	} else {
+		for _, pkg := range sbom.Packages {
+			for _, ref := range pkg.ExternalRefs {
+				if ref.ReferenceType == "purl" {
+					processPurl(ref.ReferenceLocator)
+				}
+			}
+		}
+	}
+
+	// https://github.com/konflux-ci/buildah-container/blob/5fd8a4b1163079c7978e79100ec51b41504e0f20/scripts/icm-injection-scripts/inject-icm.sh#L54
+	contentManifest := map[string]any{
+		"metadata": map[string]any{
+			"icm_version":       1,
+			"icm_spec":          "https://raw.githubusercontent.com/containerbuildsystem/atomic-reactor/master/atomic_reactor/schemas/content_manifest.json",
+			"image_layer_index": 0,
+		},
+		"from_dnf_hint": true,
+		"content_sets":  slices.Sorted(maps.Keys(contentSets)),
+	}
+	return contentManifest, nil
 }
 
 func (c *Build) determineFinalLabels(df *dockerfile.Dockerfile, userLabels []string) (map[string]string, error) {

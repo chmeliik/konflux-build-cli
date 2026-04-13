@@ -1475,7 +1475,7 @@ func Test_Build_injectBuildinfo(t *testing.T) {
 	var df *dockerfile.Dockerfile = nil
 	var userLabels []string = nil
 
-	g.Expect(c.injectBuildinfo(df, userLabels)).To(Succeed())
+	g.Expect(c.injectBuildinfo(df, userLabels, nil)).To(Succeed())
 
 	// Containerfile is copied to tempWorkdir
 	g.Expect(c.containerfileCopyPath).To(HavePrefix(c.tempWorkdir + "/"))
@@ -2351,6 +2351,195 @@ func Test_Build_copyPrefetchDir(t *testing.T) {
 
 		_, err := c.copyPrefetchDir()
 		g.Expect(err).To(MatchError(ContainSubstring("file exists")))
+	})
+}
+
+func Test_determineContentSets(t *testing.T) {
+	writeSbomFile := func(t *testing.T, content string) string {
+		t.Helper()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "sbom.json")
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	t.Run("should extract repository_id from CycloneDX SBOM", func(t *testing.T) {
+		g := NewWithT(t)
+
+		sbom := writeSbomFile(t, `{
+			"bomFormat": "CycloneDX",
+			"components": [
+				{"purl": "pkg:rpm/redhat/bash@5.1.8?repository_id=ubi-10-baseos-rpms"},
+				{"purl": "pkg:rpm/redhat/glibc@2.34?repository_id=ubi-10-appstream-rpms"}
+			]
+		}`)
+
+		result, err := determineContentSets(sbom)
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(result["content_sets"]).To(Equal([]string{
+			"ubi-10-appstream-rpms",
+			"ubi-10-baseos-rpms",
+		}))
+	})
+
+	t.Run("should extract repository_id from SPDX SBOM", func(t *testing.T) {
+		g := NewWithT(t)
+
+		sbom := writeSbomFile(t, `{
+			"packages": [
+				{
+					"externalRefs": [
+						{"referenceType": "purl", "referenceLocator": "pkg:rpm/redhat/bash@5.1.8?repository_id=ubi-10-baseos-rpms"}
+					]
+				},
+				{
+					"externalRefs": [
+						{"referenceType": "purl", "referenceLocator": "pkg:rpm/redhat/glibc@2.34?repository_id=ubi-10-appstream-rpms"}
+					]
+				}
+			]
+		}`)
+
+		result, err := determineContentSets(sbom)
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(result["content_sets"]).To(Equal([]string{
+			"ubi-10-appstream-rpms",
+			"ubi-10-baseos-rpms",
+		}))
+	})
+
+	t.Run("should deduplicate repository_ids", func(t *testing.T) {
+		g := NewWithT(t)
+
+		sbom := writeSbomFile(t, `{
+			"bomFormat": "CycloneDX",
+			"components": [
+				{"purl": "pkg:rpm/redhat/bash@5.1.8?repository_id=ubi-10-baseos-rpms"},
+				{"purl": "pkg:rpm/redhat/coreutils@8.32?repository_id=ubi-10-baseos-rpms"}
+			]
+		}`)
+
+		result, err := determineContentSets(sbom)
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(result["content_sets"]).To(Equal([]string{
+			"ubi-10-baseos-rpms",
+		}))
+	})
+
+	t.Run("should sort content_sets alphabetically", func(t *testing.T) {
+		g := NewWithT(t)
+
+		sbom := writeSbomFile(t, `{
+			"bomFormat": "CycloneDX",
+			"components": [
+				{"purl": "pkg:rpm/redhat/z-pkg@1.0?repository_id=zzz-repo"},
+				{"purl": "pkg:rpm/redhat/a-pkg@1.0?repository_id=aaa-repo"},
+				{"purl": "pkg:rpm/redhat/m-pkg@1.0?repository_id=mmm-repo"}
+			]
+		}`)
+
+		result, err := determineContentSets(sbom)
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(result["content_sets"]).To(Equal([]string{
+			"aaa-repo",
+			"mmm-repo",
+			"zzz-repo",
+		}))
+	})
+
+	t.Run("should return empty content_sets when no repository_id qualifiers", func(t *testing.T) {
+		g := NewWithT(t)
+
+		sbom := writeSbomFile(t, `{
+			"bomFormat": "CycloneDX",
+			"components": [
+				{"purl": "pkg:rpm/redhat/bash@5.1.8?arch=x86_64"}
+			]
+		}`)
+
+		result, err := determineContentSets(sbom)
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(result["content_sets"]).To(BeEmpty())
+	})
+
+	t.Run("should skip malformed PURLs without error", func(t *testing.T) {
+		g := NewWithT(t)
+
+		sbom := writeSbomFile(t, `{
+			"bomFormat": "CycloneDX",
+			"components": [
+				{"purl": "not-a-valid-purl"},
+				{"purl": "pkg:rpm/redhat/bash@5.1.8?repository_id=ubi-10-baseos-rpms"}
+			]
+		}`)
+
+		result, err := determineContentSets(sbom)
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(result["content_sets"]).To(Equal([]string{
+			"ubi-10-baseos-rpms",
+		}))
+	})
+
+	t.Run("should skip non-purl externalRefs in SPDX", func(t *testing.T) {
+		g := NewWithT(t)
+
+		sbom := writeSbomFile(t, `{
+			"packages": [
+				{
+					"externalRefs": [
+						{"referenceType": "cpe23Type", "referenceLocator": "cpe:2.3:a:redhat:bash:5.1.8"},
+						{"referenceType": "purl", "referenceLocator": "pkg:rpm/redhat/bash@5.1.8?repository_id=ubi-10-baseos-rpms"}
+					]
+				}
+			]
+		}`)
+
+		result, err := determineContentSets(sbom)
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(result["content_sets"]).To(Equal([]string{
+			"ubi-10-baseos-rpms",
+		}))
+	})
+
+	t.Run("should error when file does not exist", func(t *testing.T) {
+		g := NewWithT(t)
+
+		_, err := determineContentSets("/nonexistent/sbom.json")
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("reading prefetch SBOM"))
+	})
+
+	t.Run("should error on invalid JSON", func(t *testing.T) {
+		g := NewWithT(t)
+
+		sbom := writeSbomFile(t, `{not valid json}`)
+
+		_, err := determineContentSets(sbom)
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("unmarshalling prefetch SBOM"))
+	})
+
+	t.Run("should include correct metadata", func(t *testing.T) {
+		g := NewWithT(t)
+
+		sbom := writeSbomFile(t, `{
+			"bomFormat": "CycloneDX",
+			"components": []
+		}`)
+
+		result, err := determineContentSets(sbom)
+		g.Expect(err).ToNot(HaveOccurred())
+
+		metadata, ok := result["metadata"].(map[string]any)
+		g.Expect(ok).To(BeTrue())
+		g.Expect(metadata["icm_version"]).To(Equal(1))
+		g.Expect(metadata["icm_spec"]).To(Equal(
+			"https://raw.githubusercontent.com/containerbuildsystem/atomic-reactor/master/atomic_reactor/schemas/content_manifest.json",
+		))
+		g.Expect(metadata["image_layer_index"]).To(Equal(0))
+		g.Expect(result["from_dnf_hint"]).To(BeTrue())
 	})
 }
 
