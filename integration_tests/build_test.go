@@ -61,6 +61,7 @@ type BuildParams struct {
 	ImagePullNoProxy           string
 	YumReposDSources           []string
 	YumReposDTarget            string
+	ResolvedBaseImagesOutput   string
 	ExtraArgs                  []string
 }
 
@@ -313,6 +314,9 @@ func runBuildWithOutput(container *TestRunnerContainer, buildParams BuildParams)
 	}
 	if buildParams.YumReposDTarget != "" {
 		args = append(args, "--yum-repos-d-target", buildParams.YumReposDTarget)
+	}
+	if buildParams.ResolvedBaseImagesOutput != "" {
+		args = append(args, "--resolved-base-images-output", buildParams.ResolvedBaseImagesOutput)
 	}
 	// Add separator and extra args if provided
 	if len(buildParams.ExtraArgs) > 0 {
@@ -2652,5 +2656,130 @@ RUN cd /etc/yum.repos.d && du -b * > /tmp/repos-during-build.txt
 			Expect(reposDuringBuild).To(ContainSubstring("ubi.repo"))
 			Expect(reposDuringBuild).To(Equal(reposInBuiltImage))
 		})
+	})
+
+	t.Run("ResolvedBaseImages", func(t *testing.T) {
+		SetupGomega(t)
+
+		// The canonical references that should be on the right side in resolved-base-images.txt
+		// (if the input reference has a tag, it should resolve to canonicalWithTag, otherwise canonicalNoTag)
+		canonicalWithTag := "registry.access.redhat.com/ubi10/ubi-micro:10.1-1766049088@sha256:2946fa1b951addbcd548ef59193dc0af9b3e9fedb0287b4ddb6e697b06581622"
+		canonicalNoTag := "registry.access.redhat.com/ubi10/ubi-micro@sha256:2946fa1b951addbcd548ef59193dc0af9b3e9fedb0287b4ddb6e697b06581622"
+
+		// The non-canonical references. Note that we can't really use one without a tag,
+		// because then the digest would not be predictable. The digest is only predictable because we use
+		// UBI {version}-{release} tags, which are treated as immutable.
+		fullyQualifiedWithTag := "registry.access.redhat.com/ubi10/ubi-micro:10.1-1766049088"
+		shortWithTag := "ubi10/ubi-micro:10.1-1766049088"
+		shortWithDigest := "ubi10/ubi-micro@sha256:2946fa1b951addbcd548ef59193dc0af9b3e9fedb0287b4ddb6e697b06581622"
+		shortWithDigestAndTag := "ubi10/ubi-micro:10.1-1766049088@sha256:2946fa1b951addbcd548ef59193dc0af9b3e9fedb0287b4ddb6e697b06581622"
+
+		replacer := strings.NewReplacer(
+			"{canonicalWithTag}", canonicalWithTag,
+			"{canonicalNoTag}", canonicalNoTag,
+			"{fullyQualifiedWithTag}", fullyQualifiedWithTag,
+			"{shortWithTag}", shortWithTag,
+			"{shortWithDigest}", shortWithDigest,
+			"{shortWithDigestAndTag}", shortWithDigestAndTag,
+		)
+
+		contextDir := setupTestContext(t)
+		writeContainerfile(contextDir, replacer.Replace(`
+FROM {canonicalWithTag} AS stage1
+
+COPY --from={canonicalNoTag} /etc/os-release /tmp/os-release
+
+RUN --mount=from={fullyQualifiedWithTag},src=/etc/os-release,dst=/tmp/os-release true
+
+FROM {shortWithDigestAndTag}
+
+COPY --from=stage1 /tmp/os-release /tmp/os-release
+
+COPY --from={shortWithDigest} /etc/os-release /tmp/os-release
+
+COPY --from={shortWithTag} /etc/os-release /tmp/os-release
+`))
+
+		outputRef := "localhost/resolved-base-images-output:" + GenerateUniqueTag(t)
+
+		buildParams := BuildParams{
+			Context:                  contextDir,
+			OutputRef:                outputRef,
+			Push:                     false,
+			ResolvedBaseImagesOutput: "/workspace/resolved-base-images.txt",
+		}
+
+		container := setupBuildContainerWithCleanup(t, buildParams, nil,
+			WithEnv("CONTAINERS_REGISTRIES_CONF", "/tmp/registries.conf"))
+
+		// make it possible to test the canonicalization of image refs,
+		// e.g. if the containerfile has just "ubi10/ubi-micro" we want to make it fully qualified
+		registriesConfContent := `unqualified-search-registries = ["registry.access.redhat.com"]`
+		registriesConfPath := filepath.Join(contextDir, "registries.conf")
+		Expect(os.WriteFile(registriesConfPath, []byte(registriesConfContent), 0644)).To(Succeed())
+
+		container.CopyFileIntoContainer(registriesConfPath, "/tmp/registries.conf")
+
+		err := runBuild(container, buildParams)
+		Expect(err).ToNot(HaveOccurred())
+
+		resolvedBaseImages, err := os.ReadFile(filepath.Join(contextDir, "resolved-base-images.txt"))
+		Expect(err).ToNot(HaveOccurred())
+
+		lines := strings.Split(strings.TrimSuffix(string(resolvedBaseImages), "\n"), "\n")
+		Expect(lines).To(ConsistOf(
+			fmt.Sprintf("%s %s", canonicalNoTag, canonicalNoTag),
+			fmt.Sprintf("%s %s", canonicalWithTag, canonicalWithTag),
+			fmt.Sprintf("%s %s", fullyQualifiedWithTag, canonicalWithTag),
+			fmt.Sprintf("%s %s", shortWithTag, canonicalWithTag),
+			fmt.Sprintf("%s %s", shortWithDigestAndTag, canonicalWithTag),
+			fmt.Sprintf("%s %s", shortWithDigest, canonicalNoTag),
+		))
+	})
+
+	t.Run("ResolvedBaseImagesSkipsUnpullable", func(t *testing.T) {
+		SetupGomega(t)
+
+		contextDir := setupTestContext(t)
+
+		writeContainerfile(contextDir, fmt.Sprintf(`
+FROM %s AS builder
+
+FROM oci:./base_image
+
+COPY --from=builder /etc/os-release /tmp/os-release
+`, baseImage))
+
+		outputRef := "localhost/resolved-base-images-unpullable:" + GenerateUniqueTag(t)
+
+		buildParams := BuildParams{
+			Context:                  contextDir,
+			OutputRef:                outputRef,
+			Push:                     false,
+			ResolvedBaseImagesOutput: "/workspace/resolved-base-images.txt",
+		}
+
+		container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+		err := container.ExecuteCommand("buildah", "pull", baseImage)
+		Expect(err).ToNot(HaveOccurred())
+		err = container.ExecuteCommand(
+			"buildah", "push", "--remove-signatures", baseImage, "oci:/workspace/base_image",
+		)
+		Expect(err).ToNot(HaveOccurred())
+
+		err = runBuild(container, buildParams)
+		Expect(err).ToNot(HaveOccurred())
+
+		resolvedBaseImages, err := os.ReadFile(filepath.Join(contextDir, "resolved-base-images.txt"))
+		Expect(err).ToNot(HaveOccurred())
+
+		content := string(resolvedBaseImages)
+		Expect(content).ToNot(ContainSubstring("oci:"))
+
+		lines := strings.Split(strings.TrimSuffix(content, "\n"), "\n")
+		Expect(lines).To(ConsistOf(
+			fmt.Sprintf("%s %s", baseImage, baseImage),
+		))
 	})
 }

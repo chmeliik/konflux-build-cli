@@ -408,6 +408,69 @@ func Test_ImageRefUntils_GetImageDigest(t *testing.T) {
 	}
 }
 
+func Test_ImageRefUntils_IsNormalizedRef(t *testing.T) {
+	tests := []struct {
+		name     string
+		imageRef string
+		want     bool
+	}{
+		{
+			name:     "fully qualified with tag should return true",
+			imageRef: "registry.io/namespace/image:tag",
+			want:     true,
+		},
+		{
+			name:     "fully qualified with digest should return true",
+			imageRef: "registry.io/namespace/image@sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a",
+			want:     true,
+		},
+		{
+			name:     "fully qualified with tag and digest should return true",
+			imageRef: "registry.io/namespace/image:tag@sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a",
+			want:     true,
+		},
+		{
+			name:     "fully qualified with port should return true",
+			imageRef: "registry.io:5000/namespace/image:tag",
+			want:     true,
+		},
+		{
+			name:     "short name with namespace should return false",
+			imageRef: "namespace/image:tag",
+			want:     false,
+		},
+		{
+			name:     "docker.io without library prefix should return false",
+			imageRef: "docker.io/image:tag",
+			want:     false,
+		},
+		{
+			name:     "bare name should return false",
+			imageRef: "image",
+			want:     false,
+		},
+		{
+			name:     "invalid reference should return false",
+			imageRef: "registry.io/imAge:tag",
+			want:     false,
+		},
+		{
+			name:     "empty string should return false",
+			imageRef: "",
+			want:     false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := common.IsNormalizedRef(tc.imageRef)
+			if got != tc.want {
+				t.Errorf("IsNormalizedRef(%q) = %v, want %v", tc.imageRef, got, tc.want)
+			}
+		})
+	}
+}
+
 func Test_ValidateImageHasTagOrDigest(t *testing.T) {
 	tests := []struct {
 		name      string

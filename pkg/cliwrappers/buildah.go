@@ -22,6 +22,8 @@ type BuildahCliInterface interface {
 	Pull(args *BuildahPullArgs) error
 	Inspect(args *BuildahInspectArgs) (string, error)
 	InspectImage(name string) (BuildahImageInfo, error)
+	Images(args *BuildahImagesArgs) (string, error)
+	ImagesJson(args *BuildahImagesArgs) ([]BuildahImagesEntry, error)
 	Version() (BuildahVersionInfo, error)
 	ManifestCreate(args *BuildahManifestCreateArgs) error
 	ManifestAdd(args *BuildahManifestAddArgs) error
@@ -405,6 +407,69 @@ func (b *BuildahCli) InspectImage(name string) (BuildahImageInfo, error) {
 	}
 
 	return imageInfo, nil
+}
+
+type BuildahImagesArgs struct {
+	// Optional image name to filter the output to a specific image.
+	Image string
+	// Whether to pass --json to buildah images.
+	Json bool
+}
+
+// A subset of the JSON output of `buildah images --json`.
+type BuildahImagesEntry struct {
+	// All the names (including tag) that have been used to pull this image,
+	// resolved to the fully qualified name (includes the registry domain).
+	Names []string `json:"names"`
+	// The digest of either the manifest list or the manifest for this image.
+	// If the first pull of this image resolved directly to a manifest, this will be
+	// the manifest digest (e.g. the reference was pinned directly to a manifest digest,
+	// or the tag resolves to a manifest, not a manifest list).
+	// Otherwise, this will be the manifest list digest.
+	Digest string `json:"digest"`
+}
+
+// List images in local storage, optionally filtering by name.
+func (b *BuildahCli) Images(args *BuildahImagesArgs) (string, error) {
+	buildahArgs := []string{"images"}
+
+	if args.Json {
+		buildahArgs = append(buildahArgs, "--json")
+	}
+	if args.Image != "" {
+		buildahArgs = append(buildahArgs, args.Image)
+	}
+
+	buildahLog.Debugf("Running command:\n%s", shellJoin("buildah", buildahArgs...))
+
+	stdout, stderr, _, err := b.Executor.Execute(Command("buildah", buildahArgs...))
+	if err != nil {
+		buildahLog.Errorf("buildah images failed: %s", err.Error())
+		if stderr != "" {
+			buildahLog.Errorf("stderr:\n%s", stderr)
+		}
+		return "", err
+	}
+
+	return stdout, nil
+}
+
+// List images in local storage and parse the JSON output.
+func (b *BuildahCli) ImagesJson(args *BuildahImagesArgs) ([]BuildahImagesEntry, error) {
+	jsonArgs := *args
+	jsonArgs.Json = true
+	stdout, err := b.Images(&jsonArgs)
+	if err != nil {
+		return nil, err
+	}
+
+	var images []BuildahImagesEntry
+	err = json.Unmarshal([]byte(stdout), &images)
+	if err != nil {
+		return nil, fmt.Errorf("parsing images output: %w", err)
+	}
+
+	return images, nil
 }
 
 type BuildahVersionInfo struct {

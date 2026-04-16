@@ -15,8 +15,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/containers/image/v5/docker/reference"
 	cliWrappers "github.com/konflux-ci/konflux-build-cli/pkg/cliwrappers"
 	"github.com/konflux-ci/konflux-build-cli/pkg/common"
+	"github.com/opencontainers/go-digest"
 	"github.com/spf13/cobra"
 
 	"github.com/containerd/platforms"
@@ -250,6 +252,13 @@ var BuildParamsConfig = map[string]common.Parameter{
 		DefaultValue: "",
 		Usage:        "Set an alternative mount destination for the merged yum-repos-d-sources dir (default is /etc/yum.repos.d).",
 	},
+	"resolved-base-images-output": {
+		Name:       "resolved-base-images-output",
+		ShortName:  "",
+		EnvVarName: "KBC_BUILD_RESOLVED_BASE_IMAGES_OUTPUT",
+		TypeKind:   reflect.String,
+		Usage:      "Take the set of images that the containerfile depends on and write them to the file at the specified path.\nEach line in the file is \"<ref-from-containerfile> <canonical-ref>\",\nwhere canonical-ref includes the fully qualified name, digest and optionaly tag (if ref-from-containerfile has a tag).",
+	},
 }
 
 type BuildParams struct {
@@ -283,6 +292,7 @@ type BuildParams struct {
 	ImagePullNoProxy           string   `paramName:"image-pull-noproxy"`
 	YumReposDSources           []string `paramName:"yum-repos-d-sources"`
 	YumReposDTarget            string   `paramName:"yum-repos-d-target"`
+	ResolvedBaseImagesOutput   string   `paramName:"resolved-base-images-output"`
 	ExtraArgs                  []string // Additional arguments to pass to buildah build
 }
 
@@ -451,7 +461,8 @@ func (c *Build) Run() error {
 		}
 	}
 
-	if err := c.prePullBaseImages(containerfile); err != nil {
+	pulledImages, err := c.prePullBaseImages(containerfile)
+	if err != nil {
 		return err
 	}
 
@@ -471,6 +482,11 @@ func (c *Build) Run() error {
 
 	if c.Params.ContainerfileJsonOutput != "" {
 		if err := c.writeContainerfileJson(containerfile, c.Params.ContainerfileJsonOutput); err != nil {
+			return err
+		}
+	}
+	if c.Params.ResolvedBaseImagesOutput != "" {
+		if err := c.writeResolvedBaseImages(pulledImages, c.Params.ResolvedBaseImagesOutput); err != nil {
 			return err
 		}
 	}
@@ -1246,9 +1262,10 @@ func (c *Build) getImageLabels(imageRef string) (map[string]string, error) {
 // Pull all images referenced by the target stage and its dependencies.
 // Primarily needed for hermetic builds where network access is disabled,
 // but also useful to ensure image pulls use our retry logic instead of relying on buildah.
-func (c *Build) prePullBaseImages(df *dockerfile.Dockerfile) error {
+// Returns the list of pulled base images.
+func (c *Build) prePullBaseImages(df *dockerfile.Dockerfile) ([]string, error) {
 	if df == nil || len(df.Stages) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	var targetStage int
@@ -1257,11 +1274,13 @@ func (c *Build) prePullBaseImages(df *dockerfile.Dockerfile) error {
 			// buildah's --target matches the first stage with a matching name
 			targetStage = stages[0]
 		} else {
-			return fmt.Errorf("target stage %q not found", c.Params.Target)
+			return nil, fmt.Errorf("target stage %q not found", c.Params.Target)
 		}
 	} else {
 		targetStage = len(df.Stages) - 1
 	}
+
+	var pulledImages []string
 
 	for _, image := range c.collectBaseImages(df, targetStage) {
 		if !isPullableImage(image) {
@@ -1274,11 +1293,12 @@ func (c *Build) prePullBaseImages(df *dockerfile.Dockerfile) error {
 			HttpProxy: c.Params.ImagePullProxy,
 			NoProxy:   c.Params.ImagePullNoProxy,
 		}); err != nil {
-			return fmt.Errorf("pre-pulling image %s: %w", image, err)
+			return nil, fmt.Errorf("pre-pulling image %s: %w", image, err)
 		}
+		pulledImages = append(pulledImages, image)
 	}
 
-	return nil
+	return pulledImages, nil
 }
 
 // Collect all images needed to build the target stage.
@@ -1530,4 +1550,108 @@ func (c *Build) writeContainerfileJson(containerfile *dockerfile.Dockerfile, out
 
 	l.Logger.Info("Containerfile JSON written successfully")
 	return nil
+}
+
+// Resolve the pulled images (the input refs from the containerfile) to their canonical forms
+// (fully-qualified-name[:tag]@digest) and write the results to the specified path.
+//
+// The file format is one pair of space-separated "input-ref canonical-ref" per line.
+func (c *Build) writeResolvedBaseImages(pulledImages []string, outputPath string) error {
+	l.Logger.Infof("Writing resolved base images to: %s", outputPath)
+
+	resolvedImages, err := c.resolveBaseImages(pulledImages)
+	if err != nil {
+		return fmt.Errorf("determining resolved base images: %w", err)
+	}
+
+	var s strings.Builder
+
+	for i := range pulledImages {
+		s.WriteString(pulledImages[i])
+		s.WriteByte(' ')
+		s.WriteString(resolvedImages[i])
+		s.WriteByte('\n')
+	}
+
+	err = os.WriteFile(outputPath, []byte(s.String()), 0644)
+	if err != nil {
+		return fmt.Errorf("writing resolved base images: %w", err)
+	}
+	l.Logger.Info("Resolved base images written successfully")
+	return nil
+}
+
+func (c *Build) resolveBaseImages(pulledImages []string) ([]string, error) {
+	var resolvedImages []string
+
+	for _, image := range pulledImages {
+		_, bareImage := splitTransport(image)
+
+		inputRef, err := reference.Parse(bareImage)
+		if err != nil {
+			return nil, fmt.Errorf("parsing %s: %w", bareImage, err)
+		}
+
+		_, hasDigest := inputRef.(reference.Digested)
+		if hasDigest && common.IsNormalizedRef(bareImage) {
+			l.Logger.Debugf("Resolving base images: input already canonical: %s", bareImage)
+			resolvedImages = append(resolvedImages, inputRef.String())
+			continue
+		}
+
+		entries, err := c.CliWrappers.BuildahCli.ImagesJson(&cliWrappers.BuildahImagesArgs{Image: bareImage})
+		if err != nil {
+			return nil, fmt.Errorf("buildah images %s: %w", bareImage, err)
+		}
+		if len(entries) == 0 {
+			return nil, fmt.Errorf("'buildah images %s' succeeded but returned 0 entries!", bareImage)
+		}
+
+		var resolvedRef reference.Named
+
+		// Fully qualified name: take from 'buildah images' output.
+		name := entries[0].Names[0]
+		if ref, err := reference.Parse(name); err != nil {
+			return nil, fmt.Errorf("parsing %s (from 'buildah images %s'): %w", name, bareImage, err)
+		} else if namedRef, ok := ref.(reference.Named); !ok {
+			return nil, fmt.Errorf("'buildah images %s' returned bogus image name: %s", bareImage, name)
+		} else {
+			// Drop the tag from the name if any; relying on 'buildah images' for tags is unreliable.
+			// The Names array records every reference that has been used to pull the same image,
+			// so we may find a tag even if the input ref doesn't have one. Or we may find a different
+			// tag than the one in the input ref. This technically doesn't matter, since tags have no
+			// authoritative informational value, but it would make the resolution hard to understand.
+			resolvedRef = reference.TrimNamed(namedRef)
+		}
+
+		// Tag: take from input image or leave empty
+		if t, ok := inputRef.(reference.Tagged); ok {
+			resolvedRef, err = reference.WithTag(resolvedRef, t.Tag())
+			if err != nil {
+				panic("invalid tag in valid tagged ref: " + t.String())
+			}
+		}
+
+		// Digest: take from input image or from 'buildah images' output
+		if d, ok := inputRef.(reference.Digested); ok {
+			resolvedRef, err = reference.WithDigest(resolvedRef, d.Digest())
+			if err != nil {
+				panic("invalid digest in valid digested ref: " + d.String())
+			}
+		} else {
+			// This is also a little unpredictable, because if the input ref is a manifest list,
+			// then the Digest could be either the manifest list digest or a manifest digest
+			// (depending on how this image was pulled the first time it was pulled).
+			// But it's the best we can do at this point.
+			resolvedRef, err = reference.WithDigest(resolvedRef, digest.Digest(entries[0].Digest))
+			if err != nil {
+				return nil, fmt.Errorf("'buildah images %s' returned bogus digest: %s", bareImage, entries[0].Digest)
+			}
+		}
+
+		l.Logger.Debugf("Resolving base images: %s resolved to %s", bareImage, resolvedRef)
+		resolvedImages = append(resolvedImages, resolvedRef.String())
+	}
+
+	return resolvedImages, nil
 }
