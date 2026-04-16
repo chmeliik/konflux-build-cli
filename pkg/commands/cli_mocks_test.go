@@ -38,6 +38,8 @@ type mockBuildahCli struct {
 	ManifestAddFunc     func(args *cliwrappers.BuildahManifestAddArgs) error
 	ManifestInspectFunc func(args *cliwrappers.BuildahManifestInspectArgs) (string, error)
 	ManifestPushFunc    func(args *cliwrappers.BuildahManifestPushArgs) (string, error)
+	ImagesFunc          func(args *cliwrappers.BuildahImagesArgs) (string, error)
+	ImagesJsonFunc      func(args *cliwrappers.BuildahImagesArgs) ([]cliwrappers.BuildahImagesEntry, error)
 }
 
 func (m *mockBuildahCli) Build(args *cliwrappers.BuildahBuildArgs) error {
@@ -108,6 +110,20 @@ func (m *mockBuildahCli) ManifestPush(args *cliwrappers.BuildahManifestPushArgs)
 		return m.ManifestPushFunc(args)
 	}
 	return "", nil
+}
+
+func (m *mockBuildahCli) Images(args *cliwrappers.BuildahImagesArgs) (string, error) {
+	if m.ImagesFunc != nil {
+		return m.ImagesFunc(args)
+	}
+	return "", nil
+}
+
+func (m *mockBuildahCli) ImagesJson(args *cliwrappers.BuildahImagesArgs) ([]cliwrappers.BuildahImagesEntry, error) {
+	if m.ImagesJsonFunc != nil {
+		return m.ImagesJsonFunc(args)
+	}
+	return nil, nil
 }
 
 var _ cliwrappers.OrasCliInterface = &mockOrasCli{}

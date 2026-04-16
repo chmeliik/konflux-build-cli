@@ -1828,6 +1828,311 @@ func Test_Build_collectBaseImages(t *testing.T) {
 	}
 }
 
+func Test_Build_resolveBaseImages(t *testing.T) {
+	g := NewWithT(t)
+
+	const (
+		digestA = "sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a"
+		digestB = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	)
+
+	t.Run("should return empty for empty input", func(t *testing.T) {
+		c := &Build{
+			CliWrappers: BuildCliWrappers{BuildahCli: &mockBuildahCli{}},
+			Params:      &BuildParams{},
+		}
+
+		resolved, err := c.resolveBaseImages(nil)
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(resolved).To(BeEmpty())
+	})
+
+	t.Run("should short-circuit for already canonical ref", func(t *testing.T) {
+		imagesJsonCalled := false
+		mock := &mockBuildahCli{
+			ImagesJsonFunc: func(args *cliwrappers.BuildahImagesArgs) ([]cliwrappers.BuildahImagesEntry, error) {
+				imagesJsonCalled = true
+				return nil, nil
+			},
+		}
+		c := &Build{
+			CliWrappers: BuildCliWrappers{BuildahCli: mock},
+			Params:      &BuildParams{},
+		}
+
+		input := "registry.io/namespace/image@" + digestA
+		resolved, err := c.resolveBaseImages([]string{input})
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(resolved).To(Equal([]string{input}))
+		g.Expect(imagesJsonCalled).To(BeFalse())
+	})
+
+	t.Run("should resolve short name with tag", func(t *testing.T) {
+		mock := &mockBuildahCli{
+			ImagesJsonFunc: func(args *cliwrappers.BuildahImagesArgs) ([]cliwrappers.BuildahImagesEntry, error) {
+				return []cliwrappers.BuildahImagesEntry{
+					{Names: []string{"registry.io/namespace/image:tag"}, Digest: digestA},
+				}, nil
+			},
+		}
+		c := &Build{
+			CliWrappers: BuildCliWrappers{BuildahCli: mock},
+			Params:      &BuildParams{},
+		}
+
+		resolved, err := c.resolveBaseImages([]string{"namespace/image:tag"})
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(resolved).To(Equal([]string{"registry.io/namespace/image:tag@" + digestA}))
+	})
+
+	t.Run("should resolve short name without tag", func(t *testing.T) {
+		mock := &mockBuildahCli{
+			ImagesJsonFunc: func(args *cliwrappers.BuildahImagesArgs) ([]cliwrappers.BuildahImagesEntry, error) {
+				return []cliwrappers.BuildahImagesEntry{
+					{Names: []string{"registry.io/namespace/image:tag"}, Digest: digestA},
+				}, nil
+			},
+		}
+		c := &Build{
+			CliWrappers: BuildCliWrappers{BuildahCli: mock},
+			Params:      &BuildParams{},
+		}
+
+		resolved, err := c.resolveBaseImages([]string{"namespace/image"})
+
+		g.Expect(err).ToNot(HaveOccurred())
+		// No tag in output even though buildah Names has one
+		g.Expect(resolved).To(Equal([]string{"registry.io/namespace/image@" + digestA}))
+	})
+
+	t.Run("should preserve tag from input not from buildah Names", func(t *testing.T) {
+		mock := &mockBuildahCli{
+			ImagesJsonFunc: func(args *cliwrappers.BuildahImagesArgs) ([]cliwrappers.BuildahImagesEntry, error) {
+				return []cliwrappers.BuildahImagesEntry{
+					{Names: []string{"registry.io/namespace/image:different-tag"}, Digest: digestA},
+				}, nil
+			},
+		}
+		c := &Build{
+			CliWrappers: BuildCliWrappers{BuildahCli: mock},
+			Params:      &BuildParams{},
+		}
+
+		resolved, err := c.resolveBaseImages([]string{"namespace/image:my-tag"})
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(resolved).To(Equal([]string{"registry.io/namespace/image:my-tag@" + digestA}))
+	})
+
+	t.Run("should use digest from input when present", func(t *testing.T) {
+		mock := &mockBuildahCli{
+			ImagesJsonFunc: func(args *cliwrappers.BuildahImagesArgs) ([]cliwrappers.BuildahImagesEntry, error) {
+				return []cliwrappers.BuildahImagesEntry{
+					{Names: []string{"registry.io/namespace/image:tag"}, Digest: digestB},
+				}, nil
+			},
+		}
+		c := &Build{
+			CliWrappers: BuildCliWrappers{BuildahCli: mock},
+			Params:      &BuildParams{},
+		}
+
+		// Input has digestA, buildah returns digestB — input wins.
+		// The only realistic situation when this can occur is if input has the manifest list digest
+		// and buildah returns the manifest digest or vice versa.
+		resolved, err := c.resolveBaseImages([]string{"namespace/image@" + digestA})
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(resolved).To(Equal([]string{"registry.io/namespace/image@" + digestA}))
+	})
+
+	t.Run("should use digest from buildah when input has no digest", func(t *testing.T) {
+		mock := &mockBuildahCli{
+			ImagesJsonFunc: func(args *cliwrappers.BuildahImagesArgs) ([]cliwrappers.BuildahImagesEntry, error) {
+				return []cliwrappers.BuildahImagesEntry{
+					{Names: []string{"registry.io/namespace/image:tag"}, Digest: digestA},
+				}, nil
+			},
+		}
+		c := &Build{
+			CliWrappers: BuildCliWrappers{BuildahCli: mock},
+			Params:      &BuildParams{},
+		}
+
+		resolved, err := c.resolveBaseImages([]string{"namespace/image:tag"})
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(resolved).To(Equal([]string{"registry.io/namespace/image:tag@" + digestA}))
+	})
+
+	t.Run("should handle tag+digest with non-normalized name", func(t *testing.T) {
+		mock := &mockBuildahCli{
+			ImagesJsonFunc: func(args *cliwrappers.BuildahImagesArgs) ([]cliwrappers.BuildahImagesEntry, error) {
+				return []cliwrappers.BuildahImagesEntry{
+					{Names: []string{"registry.io/namespace/image:tag"}, Digest: digestB},
+				}, nil
+			},
+		}
+		c := &Build{
+			CliWrappers: BuildCliWrappers{BuildahCli: mock},
+			Params:      &BuildParams{},
+		}
+
+		// Non-normalized name with tag and digest — both from input
+		resolved, err := c.resolveBaseImages([]string{"namespace/image:my-tag@" + digestA})
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(resolved).To(Equal([]string{"registry.io/namespace/image:my-tag@" + digestA}))
+	})
+
+	t.Run("should resolve multiple images", func(t *testing.T) {
+		mock := &mockBuildahCli{
+			ImagesJsonFunc: func(args *cliwrappers.BuildahImagesArgs) ([]cliwrappers.BuildahImagesEntry, error) {
+				switch args.Image {
+				case "namespace/image-a:tag":
+					return []cliwrappers.BuildahImagesEntry{
+						{Names: []string{"registry.io/namespace/image-a:tag"}, Digest: digestA},
+					}, nil
+				case "namespace/image-b:tag":
+					return []cliwrappers.BuildahImagesEntry{
+						{Names: []string{"registry.io/namespace/image-b:tag"}, Digest: digestB},
+					}, nil
+				}
+				return nil, fmt.Errorf("unexpected image: %s", args.Image)
+			},
+		}
+		c := &Build{
+			CliWrappers: BuildCliWrappers{BuildahCli: mock},
+			Params:      &BuildParams{},
+		}
+
+		resolved, err := c.resolveBaseImages([]string{"namespace/image-a:tag", "namespace/image-b:tag"})
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(resolved).To(Equal([]string{
+			"registry.io/namespace/image-a:tag@" + digestA,
+			"registry.io/namespace/image-b:tag@" + digestB,
+		}))
+	})
+
+	t.Run("should error if ImagesJson fails", func(t *testing.T) {
+		mock := &mockBuildahCli{
+			ImagesJsonFunc: func(args *cliwrappers.BuildahImagesArgs) ([]cliwrappers.BuildahImagesEntry, error) {
+				return nil, errors.New("image not known")
+			},
+		}
+		c := &Build{
+			CliWrappers: BuildCliWrappers{BuildahCli: mock},
+			Params:      &BuildParams{},
+		}
+
+		_, err := c.resolveBaseImages([]string{"namespace/image:tag"})
+
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("buildah images namespace/image:tag"))
+	})
+
+	t.Run("should error if input ref is unparseable", func(t *testing.T) {
+		c := &Build{
+			CliWrappers: BuildCliWrappers{BuildahCli: &mockBuildahCli{}},
+			Params:      &BuildParams{},
+		}
+
+		_, err := c.resolveBaseImages([]string{"registry.io/imAge:tag"})
+
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("parsing registry.io/imAge:tag"))
+	})
+}
+
+func Test_Build_writeResolvedBaseImages(t *testing.T) {
+	g := NewWithT(t)
+
+	const digestA = "sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a"
+
+	t.Run("should write correct file content", func(t *testing.T) {
+		tempDir := t.TempDir()
+		outputPath := filepath.Join(tempDir, "resolved-base-images.txt")
+
+		mock := &mockBuildahCli{
+			ImagesJsonFunc: func(args *cliwrappers.BuildahImagesArgs) ([]cliwrappers.BuildahImagesEntry, error) {
+				return []cliwrappers.BuildahImagesEntry{
+					{Names: []string{"registry.io/namespace/image:tag"}, Digest: digestA},
+				}, nil
+			},
+		}
+		c := &Build{
+			CliWrappers: BuildCliWrappers{BuildahCli: mock},
+			Params:      &BuildParams{},
+		}
+
+		err := c.writeResolvedBaseImages([]string{"namespace/image:tag"}, outputPath)
+
+		g.Expect(err).ToNot(HaveOccurred())
+		content, readErr := os.ReadFile(outputPath)
+		g.Expect(readErr).ToNot(HaveOccurred())
+		g.Expect(string(content)).To(Equal(
+			"namespace/image:tag registry.io/namespace/image:tag@" + digestA + "\n",
+		))
+	})
+
+	t.Run("should write empty file for no images", func(t *testing.T) {
+		tempDir := t.TempDir()
+		outputPath := filepath.Join(tempDir, "resolved-base-images.txt")
+
+		c := &Build{
+			CliWrappers: BuildCliWrappers{BuildahCli: &mockBuildahCli{}},
+			Params:      &BuildParams{},
+		}
+
+		err := c.writeResolvedBaseImages(nil, outputPath)
+
+		g.Expect(err).ToNot(HaveOccurred())
+		content, readErr := os.ReadFile(outputPath)
+		g.Expect(readErr).ToNot(HaveOccurred())
+		g.Expect(string(content)).To(BeEmpty())
+	})
+
+	t.Run("should propagate error from resolveBaseImages", func(t *testing.T) {
+		mock := &mockBuildahCli{
+			ImagesJsonFunc: func(args *cliwrappers.BuildahImagesArgs) ([]cliwrappers.BuildahImagesEntry, error) {
+				return nil, errors.New("image not known")
+			},
+		}
+		c := &Build{
+			CliWrappers: BuildCliWrappers{BuildahCli: mock},
+			Params:      &BuildParams{},
+		}
+
+		err := c.writeResolvedBaseImages([]string{"namespace/image:tag"}, "/tmp/out.txt")
+
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("determining resolved base images"))
+	})
+
+	t.Run("should return error for unwritable path", func(t *testing.T) {
+		mock := &mockBuildahCli{
+			ImagesJsonFunc: func(args *cliwrappers.BuildahImagesArgs) ([]cliwrappers.BuildahImagesEntry, error) {
+				return []cliwrappers.BuildahImagesEntry{
+					{Names: []string{"registry.io/namespace/image:tag"}, Digest: digestA},
+				}, nil
+			},
+		}
+		c := &Build{
+			CliWrappers: BuildCliWrappers{BuildahCli: mock},
+			Params:      &BuildParams{},
+		}
+
+		err := c.writeResolvedBaseImages([]string{"namespace/image:tag"}, "/nonexistent/directory/output.txt")
+
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("writing resolved base images"))
+	})
+}
+
 func Test_chmodAddRWX(t *testing.T) {
 	g := NewWithT(t)
 

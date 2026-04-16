@@ -1141,3 +1141,170 @@ func TestBuildahCli_ManifestPush(t *testing.T) {
 		g.Expect(os.IsNotExist(statErr)).To(BeTrue(), "digest file should be cleaned up")
 	})
 }
+
+func TestBuildahCli_Images(t *testing.T) {
+	g := NewWithT(t)
+
+	t.Run("should execute buildah images with no options", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedArgs []string
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			g.Expect(cmd.Name).To(Equal("buildah"))
+			capturedArgs = cmd.Args
+			return "output", "", 0, nil
+		}
+
+		stdout, err := buildahCli.Images(&cliwrappers.BuildahImagesArgs{})
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(stdout).To(Equal("output"))
+		g.Expect(capturedArgs).To(Equal([]string{"images"}))
+	})
+
+	t.Run("should pass --json flag when Json is true", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedArgs []string
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			capturedArgs = cmd.Args
+			return "", "", 0, nil
+		}
+
+		_, err := buildahCli.Images(&cliwrappers.BuildahImagesArgs{Json: true})
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(capturedArgs).To(Equal([]string{"images", "--json"}))
+	})
+
+	t.Run("should pass image name when Image is set", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedArgs []string
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			capturedArgs = cmd.Args
+			return "", "", 0, nil
+		}
+
+		_, err := buildahCli.Images(&cliwrappers.BuildahImagesArgs{Image: "registry.io/namespace/image:tag"})
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(capturedArgs).To(Equal([]string{"images", "registry.io/namespace/image:tag"}))
+	})
+
+	t.Run("should pass both --json and image name", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedArgs []string
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			capturedArgs = cmd.Args
+			return "", "", 0, nil
+		}
+
+		_, err := buildahCli.Images(&cliwrappers.BuildahImagesArgs{
+			Json:  true,
+			Image: "registry.io/namespace/image:tag",
+		})
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(capturedArgs).To(Equal([]string{"images", "--json", "registry.io/namespace/image:tag"}))
+	})
+
+	t.Run("should error if buildah execution fails", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			return "", "something went wrong", 1, errors.New("buildah images failed")
+		}
+
+		stdout, err := buildahCli.Images(&cliwrappers.BuildahImagesArgs{})
+
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(Equal("buildah images failed"))
+		g.Expect(stdout).To(BeEmpty())
+	})
+}
+
+func TestBuildahCli_ImagesJson(t *testing.T) {
+	g := NewWithT(t)
+
+	t.Run("should parse valid JSON output", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			return `[{"names":["registry.io/namespace/image:tag"],"digest":"sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a"}]`, "", 0, nil
+		}
+
+		entries, err := buildahCli.ImagesJson(&cliwrappers.BuildahImagesArgs{})
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(entries).To(HaveLen(1))
+		g.Expect(entries[0].Names).To(Equal([]string{"registry.io/namespace/image:tag"}))
+		g.Expect(entries[0].Digest).To(Equal("sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a"))
+	})
+
+	t.Run("should always set Json to true", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedArgs []string
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			capturedArgs = cmd.Args
+			return `[]`, "", 0, nil
+		}
+
+		_, err := buildahCli.ImagesJson(&cliwrappers.BuildahImagesArgs{Json: false})
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(capturedArgs).To(ContainElement("--json"))
+	})
+
+	t.Run("should pass image name through", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedArgs []string
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			capturedArgs = cmd.Args
+			return `[]`, "", 0, nil
+		}
+
+		_, err := buildahCli.ImagesJson(&cliwrappers.BuildahImagesArgs{Image: "registry.io/namespace/image:tag"})
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(capturedArgs).To(ContainElement("registry.io/namespace/image:tag"))
+	})
+
+	t.Run("should handle multiple entries", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			return `[
+				{"names":["registry.io/ns/image-a:tag"],"digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+				{"names":["registry.io/ns/image-b:tag"],"digest":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+			]`, "", 0, nil
+		}
+
+		entries, err := buildahCli.ImagesJson(&cliwrappers.BuildahImagesArgs{})
+
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(entries).To(HaveLen(2))
+		g.Expect(entries[0].Names).To(Equal([]string{"registry.io/ns/image-a:tag"}))
+		g.Expect(entries[1].Names).To(Equal([]string{"registry.io/ns/image-b:tag"}))
+	})
+
+	t.Run("should error if executor fails", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			return "", "", 1, errors.New("buildah images failed")
+		}
+
+		entries, err := buildahCli.ImagesJson(&cliwrappers.BuildahImagesArgs{})
+
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(Equal("buildah images failed"))
+		g.Expect(entries).To(BeNil())
+	})
+
+	t.Run("should error if JSON parsing fails", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			return `{not json}`, "", 0, nil
+		}
+
+		entries, err := buildahCli.ImagesJson(&cliwrappers.BuildahImagesArgs{})
+
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("parsing images output"))
+		g.Expect(entries).To(BeNil())
+	})
+}

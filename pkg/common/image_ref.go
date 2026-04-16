@@ -107,3 +107,15 @@ func ValidateImageHasTagOrDigest(imageRef string) error {
 
 	return fmt.Errorf("image '%s' must have a tag or digest", imageRef)
 }
+
+func IsNormalizedRef(imageRef string) bool {
+	ref, err := reference.Parse(imageRef)
+	if err != nil {
+		return false
+	}
+	normalizedRef, err := reference.ParseNormalizedNamed(imageRef)
+	if err != nil {
+		return false
+	}
+	return ref.String() == normalizedRef.String()
+}
