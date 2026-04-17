@@ -1371,6 +1371,7 @@ func (c *Build) injectBuildinfo(df *dockerfile.Dockerfile, userLabels []string, 
 	if err := writeBuildinfoJSON(buildinfoDir, labels, "labels.json"); err != nil {
 		return fmt.Errorf("writing labels.json to buildinfo dir: %w", err)
 	}
+	l.Logger.Info("Injecting buildinfo: added labels.json")
 
 	if err := c.ensureContainerfileCopied(); err != nil {
 		return err
