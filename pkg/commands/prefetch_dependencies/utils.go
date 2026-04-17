@@ -86,15 +86,11 @@ func containsRPM(input any) bool {
 }
 
 // Modify the user input for RPM packages.
-func injectRPMInput(input any, rhsmOrgPath string, rhsmActivationKeyPath string) (any, error) {
+func injectRPMInput(input any, registeredWithRHSM bool) (any, error) {
 	withSummary := injectSummaryInSBOMField(input)
 
-	if rhsmOrgPath == "" || rhsmActivationKeyPath == "" {
+	if !registeredWithRHSM {
 		return withSummary, nil
-	}
-
-	if err := registerSubscriptionManager(rhsmOrgPath, rhsmActivationKeyPath); err != nil {
-		return withSummary, fmt.Errorf("failed to register with subscription-manager: %w", err)
 	}
 
 	// Glob ignores file system errors such as I/O errors reading directories.
@@ -235,7 +231,7 @@ func unregisterSubscriptionManager() {
 	_, _, _, err := executor.Execute(cliwrappers.Command("subscription-manager", "unregister"))
 	// Ignore errors as unregister is a best-effort operation.
 	if err != nil {
-		log.Debug("subscription-manager unregister command failed")
+		log.Warn("subscription-manager unregister command failed")
 	}
 }
 

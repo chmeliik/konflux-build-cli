@@ -99,9 +99,15 @@ func (pd *PrefetchDependencies) Run() error {
 
 	decodedJSONInput := parseInput(pd.Config.Input)
 	if containsRPM(decodedJSONInput) {
-		defer unregisterSubscriptionManager()
+		registerRHSM := pd.Config.RHSMOrg != "" && pd.Config.RHSMActivationKey != ""
+		if registerRHSM {
+			if err := registerSubscriptionManager(pd.Config.RHSMOrg, pd.Config.RHSMActivationKey); err != nil {
+				return fmt.Errorf("failed to register with subscription-manager: %w", err)
+			}
+			defer unregisterSubscriptionManager()
+		}
 
-		modifiedInput, err := injectRPMInput(decodedJSONInput, pd.Config.RHSMOrg, pd.Config.RHSMActivationKey)
+		modifiedInput, err := injectRPMInput(decodedJSONInput, registerRHSM)
 		if err != nil {
 			return fmt.Errorf("failed to inject RPM input: %w", err)
 		}
