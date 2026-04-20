@@ -52,4 +52,5 @@ func init() {
 	rootCmd.AddCommand(prefetchDependenciesCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(internalCmdGroup)
+	rootCmd.AddCommand(gitCloneCmd)
 }

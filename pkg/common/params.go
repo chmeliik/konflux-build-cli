@@ -259,13 +259,19 @@ func ParseParameters(cmd *cobra.Command, paramsConfig map[string]Parameter, para
 // Also needs the paramsConfig map to find parameter info.
 //
 // Logs the user-facing parameter names (from the `paramName` struct tag).
+// Parameters listed in exclude are skipped (useful when special handling like URL sanitization is needed).
 //
 // Always logs required params.
 // For optional params, decides whether to log as follows:
 // - booleans: log if the value is different than the default
 // - slices, arrays: log if not empty
 // - anything else: log if the value is not the "zero value" for its type
-func LogParameters(paramsConfig map[string]Parameter, params any) {
+func LogParameters(paramsConfig map[string]Parameter, params any, exclude ...string) {
+	excludeSet := make(map[string]bool, len(exclude))
+	for _, e := range exclude {
+		excludeSet[e] = true
+	}
+
 	paramsStruct := reflect.ValueOf(params).Elem()
 	paramsStructType := paramsStruct.Type()
 
@@ -273,6 +279,10 @@ func LogParameters(paramsConfig map[string]Parameter, params any) {
 		field := paramsStructType.Field(i)
 		tag := field.Tag.Get("paramName")
 		if tag == "" {
+			continue
+		}
+
+		if excludeSet[tag] {
 			continue
 		}
 
