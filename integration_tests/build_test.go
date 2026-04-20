@@ -1551,6 +1551,25 @@ COPY hello.txt /hello.txt
 	t.Run("InjectingBuildinfo", func(t *testing.T) {
 		SetupGomega(t)
 
+		setupPrefetchDirWithSbom := func(t *testing.T) string {
+			prefetchDir := t.TempDir()
+			// Needs group-write permissions so that taskuser can write to it
+			Expect(os.Chmod(prefetchDir, 0775)).To(Succeed())
+			Expect(os.Mkdir(filepath.Join(prefetchDir, "output"), 0755)).To(Succeed())
+
+			sbomContent := `{
+				"bomFormat": "CycloneDX",
+				"components": [
+					{"purl": "pkg:rpm/redhat/bash@5.1.8?repository_id=ubi-10-baseos-rpms"},
+					{"purl": "pkg:rpm/redhat/glibc@2.34?repository_id=ubi-10-appstream-rpms"}
+				]
+			}`
+			sbomPath := filepath.Join(prefetchDir, "output", "bom.json")
+			Expect(os.WriteFile(sbomPath, []byte(sbomContent), 0644)).To(Succeed())
+
+			return prefetchDir
+		}
+
 		t.Run("LabelsJSON", func(t *testing.T) {
 			SetupGomega(t)
 
@@ -1880,12 +1899,57 @@ LABEL io.buildah.version=0.0.1
 				"Expected labels.json (top) to match the actual image labels (bottom)")
 		})
 
+		t.Run("ContentSetsJSON", func(t *testing.T) {
+			SetupGomega(t)
+
+			contextDir := setupTestContext(t)
+
+			writeContainerfile(contextDir, `FROM scratch`)
+			prefetchDir := setupPrefetchDirWithSbom(t)
+
+			outputRef := "localhost/test-injecting-buildinfo-content-sets:" + GenerateUniqueTag(t)
+
+			buildParams := BuildParams{
+				Context:     contextDir,
+				OutputRef:   outputRef,
+				Push:        false,
+				PrefetchDir: "/prefetch",
+			}
+
+			container := setupBuildContainerWithCleanup(t, buildParams, nil,
+				WithVolumeWithOptions(prefetchDir, "/prefetch", "z"))
+
+			err := runBuild(container, buildParams)
+			Expect(err).ToNot(HaveOccurred())
+
+			contentsSetsContent := getFileContentFromOutputImage(container, outputRef, "/usr/share/buildinfo/content-sets.json")
+
+			var contentManifest struct {
+				ContentSets []string `json:"content_sets"`
+			}
+			Expect(json.Unmarshal([]byte(contentsSetsContent), &contentManifest)).To(Succeed())
+
+			Expect(contentManifest.ContentSets).To(Equal([]string{
+				"ubi-10-appstream-rpms",
+				"ubi-10-baseos-rpms",
+			}))
+
+			stat := statFileInOutputImage(container, outputRef, "/usr/share/buildinfo/content-sets.json")
+			Expect(stat).To(ContainSubstring("Access: (0644/-rw-r--r--)"),
+				"The injected content-sets.json file should have mode 0644")
+
+			// Also verify that content-sets.json injection doesn't break labels.json injection
+			labelsExist := fileExistsInOutputImage(container, outputRef, "/usr/share/buildinfo/labels.json")
+			Expect(labelsExist).To(BeTrue(), "should have injected labels.json along with content-sets.json")
+		})
+
 		t.Run("SkipInjections", func(t *testing.T) {
 			SetupGomega(t)
 
 			contextDir := setupTestContext(t)
 
 			writeContainerfile(contextDir, `FROM scratch`)
+			prefetchDir := setupPrefetchDirWithSbom(t)
 
 			outputRef := "localhost/test-injecting-buildinfo-skip-injections:" + GenerateUniqueTag(t)
 
@@ -1894,18 +1958,20 @@ LABEL io.buildah.version=0.0.1
 				OutputRef:      outputRef,
 				Push:           false,
 				SkipInjections: true,
+				PrefetchDir:    "/prefetch",
 			}
 
-			container := setupBuildContainerWithCleanup(t, buildParams, nil)
+			container := setupBuildContainerWithCleanup(t, buildParams, nil,
+				WithVolumeWithOptions(prefetchDir, "/prefetch", "z"))
 
 			err := runBuild(container, buildParams)
 			Expect(err).ToNot(HaveOccurred())
 
-			exists := fileExistsInOutputImage(container, outputRef, "/usr/share/buildinfo/labels.json")
-			Expect(exists).To(BeFalse(), "Should not have injected /usr/share/buildinfo/labels.json")
+			exists := fileExistsInOutputImage(container, outputRef, "/usr/share/buildinfo")
+			Expect(exists).To(BeFalse(), "Should not have injected anything into /usr/share/buildinfo")
 
-			exists2 := fileExistsInOutputImage(container, outputRef, "/root/buildinfo/labels.json")
-			Expect(exists2).To(BeFalse(), "Should not have injected /root/buildinfo/labels.json")
+			exists2 := fileExistsInOutputImage(container, outputRef, "/root/buildinfo")
+			Expect(exists2).To(BeFalse(), "Should not have injected anything into /root/buildinfo")
 		})
 
 		t.Run("LegacyBuildinfoPath", func(t *testing.T) {
@@ -1914,6 +1980,7 @@ LABEL io.buildah.version=0.0.1
 			contextDir := setupTestContext(t)
 
 			writeContainerfile(contextDir, `FROM scratch`)
+			prefetchDir := setupPrefetchDirWithSbom(t)
 
 			outputRef := "localhost/test-injecting-buildinfo-legacy-buildinfo-path:" + GenerateUniqueTag(t)
 
@@ -1923,13 +1990,16 @@ LABEL io.buildah.version=0.0.1
 				Push:                       false,
 				IncludeLegacyBuildinfoPath: true,
 				Labels:                     []string{"foo=bar"},
+				PrefetchDir:                "/prefetch",
 			}
 
-			container := setupBuildContainerWithCleanup(t, buildParams, nil)
+			container := setupBuildContainerWithCleanup(t, buildParams, nil,
+				WithVolumeWithOptions(prefetchDir, "/prefetch", "z"))
 
 			err := runBuild(container, buildParams)
 			Expect(err).ToNot(HaveOccurred())
 
+			// Labels
 			labelsContent := getFileContentFromOutputImage(container, outputRef, "/usr/share/buildinfo/labels.json")
 			legacyLabelsContent := getFileContentFromOutputImage(container, outputRef, "/root/buildinfo/labels.json")
 
@@ -1942,6 +2012,17 @@ LABEL io.buildah.version=0.0.1
 			stat := statFileInOutputImage(container, outputRef, "/root/buildinfo/labels.json")
 			Expect(stat).To(ContainSubstring("Access: (0644/-rw-r--r--)"),
 				"The injected labels.json file should have mode 0644")
+
+			// Content sets
+			contentSetsContent := getFileContentFromOutputImage(container, outputRef, "/usr/share/buildinfo/content-sets.json")
+			legacyContentSetsContent := getFileContentFromOutputImage(container, outputRef, "/root/buildinfo/content-sets.json")
+
+			Expect(contentSetsContent).To(Equal(legacyContentSetsContent),
+				"/usr/share/buildinfo/content-sets.json (top) does not match /root/buildinfo/content-sets.json (bottom)")
+
+			stat = statFileInOutputImage(container, outputRef, "/root/buildinfo/content-sets.json")
+			Expect(stat).To(ContainSubstring("Access: (0644/-rw-r--r--)"),
+				"The injected content-sets.json file should have mode 0644")
 		})
 
 		t.Run("KnownIssues", func(t *testing.T) {
