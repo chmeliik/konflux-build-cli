@@ -737,12 +737,12 @@ func Test_GitClone_mergeTargetBranch(t *testing.T) {
 		c = &GitClone{
 			CliWrappers: CliWrappers{GitCli: _mockGitCli},
 			Params: &Params{
-				URL:              "https://git.test/user/repo.git",
-				OutputDir:        "/workspace",
-				Subdirectory:     "source",
-				TargetBranch:     "main",
-				Depth:            10,
-				MergeSourceDepth: 0,
+				URL:                    "https://git.test/user/repo.git",
+				OutputDir:              "/workspace",
+				Subdirectory:           "source",
+				TargetBranch:           "main",
+				Depth:                  10,
+				MergeSourceDepth:       0,
 				RetryMaxAttempts:       3,
 				MergeCommitAuthorName:  "Konflux CI Git Clone",
 				MergeCommitAuthorEmail: "git-clone@konflux-ci.dev",
