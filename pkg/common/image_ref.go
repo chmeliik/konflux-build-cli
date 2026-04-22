@@ -108,6 +108,33 @@ func ValidateImageHasTagOrDigest(imageRef string) error {
 	return fmt.Errorf("image '%s' must have a tag or digest", imageRef)
 }
 
+// GetImageURL strips the digest from an image reference. For
+// repo:tag@sha256:... returns repo:tag. For repo@sha256:... returns repo.
+// For repo:tag returns repo:tag unchanged.
+func GetImageURL(imageRef string) string {
+	ref, err := reference.Parse(imageRef)
+	if err != nil {
+		return imageRef
+	}
+
+	named, ok := ref.(reference.Named)
+	if !ok {
+		return imageRef
+	}
+
+	baseName := reference.TrimNamed(named)
+
+	if tagged, ok := ref.(reference.Tagged); ok {
+		taggedRef, err := reference.WithTag(baseName, tagged.Tag())
+		if err != nil {
+			return imageRef
+		}
+		return taggedRef.String()
+	}
+
+	return baseName.String()
+}
+
 func IsNormalizedRef(imageRef string) bool {
 	ref, err := reference.Parse(imageRef)
 	if err != nil {

@@ -136,6 +136,7 @@ type BuildImageIndex struct {
 
 	imageName   string
 	imageDigest string
+	imageURL    string
 	images      []string
 }
 
@@ -177,13 +178,14 @@ func (c *BuildImageIndex) Run() error {
 	}
 
 	c.imageName = common.GetImageName(c.Params.Image)
+	c.imageURL = c.Params.Image
 
 	if err := c.buildManifestIndex(); err != nil {
 		return fmt.Errorf("failed to build image index: %w", err)
 	}
 
 	c.Results.ImageDigest = c.imageDigest
-	c.Results.ImageURL = c.Params.Image
+	c.Results.ImageURL = c.imageURL
 	c.Results.ImageRef = c.imageName + "@" + c.imageDigest
 	c.Results.Images = strings.Join(c.images, ",")
 
@@ -240,6 +242,7 @@ func (c *BuildImageIndex) buildManifestIndex() error {
 			l.Logger.Info("Skipping image index generation. Returning results for single image.")
 			c.images = []string{normalizedRef}
 			c.imageDigest = common.GetImageDigest(normalizedRef)
+			c.imageURL = common.GetImageURL(imageRef)
 			return nil
 		}
 

@@ -408,6 +408,59 @@ func Test_ImageRefUntils_GetImageDigest(t *testing.T) {
 	}
 }
 
+func Test_ImageRefUtils_GetImageURL(t *testing.T) {
+	tests := []struct {
+		name  string
+		image string
+		want  string
+	}{
+		{
+			name:  "image with tag and digest should return repo:tag",
+			image: "registry.io/namespace/image:tag@sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a",
+			want:  "registry.io/namespace/image:tag",
+		},
+		{
+			name:  "image with arch-specific tag and digest should return repo:tag-with-arch",
+			image: "quay.io/org/repo:abc123-linux-x86-64@sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a",
+			want:  "quay.io/org/repo:abc123-linux-x86-64",
+		},
+		{
+			name:  "image with only tag should return unchanged",
+			image: "registry.io/namespace/image:tag",
+			want:  "registry.io/namespace/image:tag",
+		},
+		{
+			name:  "image with only digest should strip digest and return name",
+			image: "registry.io/namespace/image@sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a",
+			want:  "registry.io/namespace/image",
+		},
+		{
+			name:  "image without tag or digest should return unchanged",
+			image: "registry.io/namespace/image",
+			want:  "registry.io/namespace/image",
+		},
+		{
+			name:  "image with port, tag and digest should return repo:tag",
+			image: "registry.io:5000/namespace/image:v1.0@sha256:586ab46b9d6d906b2df3dad12751e807bd0f0632d5a2ab3991bdac78bdccd59a",
+			want:  "registry.io:5000/namespace/image:v1.0",
+		},
+		{
+			name:  "invalid reference should return unchanged",
+			image: "not a valid reference",
+			want:  "not a valid reference",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := common.GetImageURL(tc.image)
+			if got != tc.want {
+				t.Errorf("GetImageURL(%q) = %q, want %q", tc.image, got, tc.want)
+			}
+		})
+	}
+}
+
 func Test_ImageRefUntils_IsNormalizedRef(t *testing.T) {
 	tests := []struct {
 		name     string
