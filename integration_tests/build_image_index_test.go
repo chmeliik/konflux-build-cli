@@ -323,8 +323,9 @@ func TestBuildImageIndex_SingleImageSkipIndex(t *testing.T) {
 
 	// No registry needed - we're skipping index build, just returning input image info
 	targetImage := "quay.io/test/myapp:latest"
+	inputImageURL := "quay.io/test/myapp:latest-x86_64"
 	digest := "sha256:1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
-	imageWithDigest := "quay.io/test/myapp@" + digest
+	inputImage := inputImageURL + "@" + digest
 
 	container := NewBuildCliRunnerContainer("build-image-index", BuildImageIndexImage)
 	defer container.DeleteIfExists()
@@ -335,7 +336,7 @@ func TestBuildImageIndex_SingleImageSkipIndex(t *testing.T) {
 	// Run the command with always-build-index=false
 	args := []string{"image", "build-image-index"}
 	args = append(args, "--image", targetImage)
-	args = append(args, "--images", imageWithDigest)
+	args = append(args, "--images", inputImage)
 	args = append(args, "--buildah-format", "oci")
 	args = append(args, "--always-build-index=false")
 
@@ -348,10 +349,10 @@ func TestBuildImageIndex_SingleImageSkipIndex(t *testing.T) {
 	Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("failed to parse results JSON (stderr: %s)", stderr))
 
 	// Verify results - should just return info about the single image
-	Expect(results.ImageURL).To(Equal(targetImage))
+	Expect(results.ImageURL).To(Equal(inputImageURL))
 	Expect(results.ImageDigest).To(Equal(digest))
 	Expect(results.ImageRef).To(Equal("quay.io/test/myapp@" + digest))
-	Expect(results.Images).To(Equal(imageWithDigest))
+	Expect(results.Images).To(Equal("quay.io/test/myapp@" + digest))
 }
 
 func TestBuildImageIndex_SingleImageAlwaysBuildIndex(t *testing.T) {
