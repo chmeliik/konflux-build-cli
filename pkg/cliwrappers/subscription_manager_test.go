@@ -78,7 +78,7 @@ func TestSubscriptionManagerCli_Register(t *testing.T) {
 		err := smCli.Register(params)
 
 		g.Expect(err).To(HaveOccurred())
-		g.Expect(err.Error()).To(Equal("subscription-manager register command failed"))
+		g.Expect(err.Error()).To(Equal("command failed"))
 	})
 }
 

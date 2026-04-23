@@ -47,17 +47,24 @@ func (sm *SubscriptionManagerCli) Register(params *SubscriptionManagerRegisterPa
 	}
 
 	retryer := NewRetryer(command).StopIfOutputContains("unauthorized")
-	_, _, _, err := retryer.Run()
+	_, stderr, _, err := retryer.Run()
 	if err != nil {
-		return errors.New("subscription-manager register command failed")
+		submanLog.Errorf("subscription-manager register failed: %s", err.Error())
+		if stderr != "" {
+			submanLog.Errorf("stderr:\n%s", stderr)
+		}
+		return err
 	}
 	return nil
 }
 
 // Unregister the system from Red Hat Subscription Manager (best-effort).
 func (sm *SubscriptionManagerCli) Unregister() {
-	_, _, _, err := sm.Executor.Execute(Cmd{Name: "subscription-manager", Args: []string{"unregister"}})
+	_, stderr, _, err := sm.Executor.Execute(Cmd{Name: "subscription-manager", Args: []string{"unregister"}})
 	if err != nil {
 		submanLog.Warn("subscription-manager unregister command failed")
+		if stderr != "" {
+			submanLog.Warnf("stderr:\n%s", stderr)
+		}
 	}
 }
