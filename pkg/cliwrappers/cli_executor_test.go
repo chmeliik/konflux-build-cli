@@ -1,7 +1,6 @@
 package cliwrappers_test
 
 import (
-	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,32 +9,10 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
-	"github.com/sirupsen/logrus"
 
 	"github.com/konflux-ci/konflux-build-cli/pkg/cliwrappers"
-	l "github.com/konflux-ci/konflux-build-cli/pkg/logger"
+	"github.com/konflux-ci/konflux-build-cli/testutil"
 )
-
-func captureLogOutput(fn func()) string {
-	origOut := l.Logger.Out
-	origFormatter := l.Logger.Formatter
-	origLevel := l.Logger.Level
-
-	var buf bytes.Buffer
-	l.Logger.SetOutput(&buf)
-	l.Logger.SetFormatter(&logrus.TextFormatter{DisableTimestamp: true})
-	l.Logger.SetLevel(logrus.InfoLevel)
-
-	defer func() {
-		l.Logger.SetOutput(origOut)
-		l.Logger.SetFormatter(origFormatter)
-		l.Logger.SetLevel(origLevel)
-	}()
-
-	fn()
-
-	return buf.String()
-}
 
 func TestNewCliExecutor(t *testing.T) {
 	t.Run("should create new CLI executor instance", func(t *testing.T) {
@@ -203,7 +180,7 @@ func TestCliExecutor_ExecuteWithLogOutput(t *testing.T) {
 		var stdout, stderr string
 		var exitCode int
 		var err error
-		logOutput := captureLogOutput(func() {
+		logOutput := testutil.CaptureLogOutput(func() {
 			cmd := cliwrappers.Command("echo", "test output")
 			cmd.LogOutput = true
 			stdout, stderr, exitCode, err = executor.Execute(cmd)
@@ -225,7 +202,7 @@ func TestCliExecutor_ExecuteWithLogOutput(t *testing.T) {
 		var stdout, stderr string
 		var exitCode int
 		var err error
-		logOutput := captureLogOutput(func() {
+		logOutput := testutil.CaptureLogOutput(func() {
 			var cmd cliwrappers.Cmd
 			if runtime.GOOS == "windows" {
 				cmd = cliwrappers.Command("cmd", "/c", "echo stdout output & echo stderr output 1>&2")
@@ -262,7 +239,7 @@ func TestCliExecutor_ExecuteWithLogOutput(t *testing.T) {
 		var stdout, stderr string
 		var exitCode int
 		var err error
-		logOutput := captureLogOutput(func() {
+		logOutput := testutil.CaptureLogOutput(func() {
 			var cmd cliwrappers.Cmd
 			if runtime.GOOS == "windows" {
 				cmd = cliwrappers.Command("cmd", "/c", "echo line1 & echo line2 & echo line3")
@@ -293,7 +270,7 @@ func TestCliExecutor_ExecuteWithLogOutput(t *testing.T) {
 		var stdout, stderr string
 		var exitCode int
 		var err error
-		logOutput := captureLogOutput(func() {
+		logOutput := testutil.CaptureLogOutput(func() {
 			var cmd cliwrappers.Cmd
 			if runtime.GOOS == "windows" {
 				cmd = cliwrappers.Command("cmd", "/c", "echo output & exit 5")
@@ -320,7 +297,7 @@ func TestCliExecutor_ExecuteWithLogOutput(t *testing.T) {
 		var stdout, stderr string
 		var exitCode int
 		var err error
-		logOutput := captureLogOutput(func() {
+		logOutput := testutil.CaptureLogOutput(func() {
 			cmd := cliwrappers.Command("echo", "%s", "hello")
 			cmd.LogOutput = true
 			cmd.NameInLogs = "printf"
@@ -366,7 +343,7 @@ func TestCliExecutor_ExecuteWithLogOutput(t *testing.T) {
 
 		var stdout, stderr string
 		var exitCode int
-		logOutput := captureLogOutput(func() {
+		logOutput := testutil.CaptureLogOutput(func() {
 			cmd := cliwrappers.Command("cat", longLineFile)
 			cmd.LogOutput = true
 			stdout, stderr, exitCode, err = executor.Execute(cmd)

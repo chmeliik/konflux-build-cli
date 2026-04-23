@@ -1,15 +1,13 @@
 package common
 
 import (
-	"bytes"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
 
-	l "github.com/konflux-ci/konflux-build-cli/pkg/logger"
+	"github.com/konflux-ci/konflux-build-cli/testutil"
 	. "github.com/onsi/gomega"
-	"github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 )
 
@@ -695,27 +693,6 @@ func TestParseParameters(t *testing.T) {
 	})
 }
 
-func captureLogOutput(fn func()) string {
-	origOut := l.Logger.Out
-	origFormatter := l.Logger.Formatter
-	origLevel := l.Logger.Level
-
-	var buf bytes.Buffer
-	l.Logger.SetOutput(&buf)
-	l.Logger.SetFormatter(&logrus.TextFormatter{DisableTimestamp: true})
-	l.Logger.SetLevel(logrus.InfoLevel)
-
-	defer func() {
-		l.Logger.SetOutput(origOut)
-		l.Logger.SetFormatter(origFormatter)
-		l.Logger.SetLevel(origLevel)
-	}()
-
-	fn()
-
-	return buf.String()
-}
-
 func TestLogParameters(t *testing.T) {
 	type TestParams struct {
 		RequiredStr string   `paramName:"required-str"`
@@ -767,7 +744,7 @@ func TestLogParameters(t *testing.T) {
 	t.Run("required param is always logged", func(t *testing.T) {
 		g := NewWithT(t)
 		params := &TestParams{RequiredStr: ""}
-		output := captureLogOutput(func() {
+		output := testutil.CaptureLogOutput(func() {
 			LogParameters(paramsConfig, params)
 		})
 		g.Expect(output).To(ContainSubstring("[param] required-str: "))
@@ -776,7 +753,7 @@ func TestLogParameters(t *testing.T) {
 	t.Run("optional string at zero value is not logged", func(t *testing.T) {
 		g := NewWithT(t)
 		params := &TestParams{OptionalStr: ""}
-		output := captureLogOutput(func() {
+		output := testutil.CaptureLogOutput(func() {
 			LogParameters(paramsConfig, params)
 		})
 		g.Expect(output).ToNot(ContainSubstring("optional-str"))
@@ -785,7 +762,7 @@ func TestLogParameters(t *testing.T) {
 	t.Run("optional string with value is logged", func(t *testing.T) {
 		g := NewWithT(t)
 		params := &TestParams{OptionalStr: "custom"}
-		output := captureLogOutput(func() {
+		output := testutil.CaptureLogOutput(func() {
 			LogParameters(paramsConfig, params)
 		})
 		g.Expect(output).To(ContainSubstring("[param] optional-str: custom"))
@@ -794,7 +771,7 @@ func TestLogParameters(t *testing.T) {
 	t.Run("bool at default is not logged", func(t *testing.T) {
 		g := NewWithT(t)
 		params := &TestParams{Flag: false, DefaultTrue: true}
-		output := captureLogOutput(func() {
+		output := testutil.CaptureLogOutput(func() {
 			LogParameters(paramsConfig, params)
 		})
 		g.Expect(output).ToNot(ContainSubstring("flag"))
@@ -804,7 +781,7 @@ func TestLogParameters(t *testing.T) {
 	t.Run("bool changed from default is logged", func(t *testing.T) {
 		g := NewWithT(t)
 		params := &TestParams{Flag: true, DefaultTrue: false}
-		output := captureLogOutput(func() {
+		output := testutil.CaptureLogOutput(func() {
 			LogParameters(paramsConfig, params)
 		})
 		g.Expect(output).To(ContainSubstring("[param] flag: true"))
@@ -814,7 +791,7 @@ func TestLogParameters(t *testing.T) {
 	t.Run("int at zero value is not logged", func(t *testing.T) {
 		g := NewWithT(t)
 		params := &TestParams{Count: 0}
-		output := captureLogOutput(func() {
+		output := testutil.CaptureLogOutput(func() {
 			LogParameters(paramsConfig, params)
 		})
 		g.Expect(output).ToNot(ContainSubstring("count"))
@@ -823,7 +800,7 @@ func TestLogParameters(t *testing.T) {
 	t.Run("non-zero int is logged", func(t *testing.T) {
 		g := NewWithT(t)
 		params := &TestParams{Count: 42}
-		output := captureLogOutput(func() {
+		output := testutil.CaptureLogOutput(func() {
 			LogParameters(paramsConfig, params)
 		})
 		g.Expect(output).To(ContainSubstring("[param] count: 42"))
@@ -832,7 +809,7 @@ func TestLogParameters(t *testing.T) {
 	t.Run("nil slice is not logged", func(t *testing.T) {
 		g := NewWithT(t)
 		params := &TestParams{Items: nil}
-		output := captureLogOutput(func() {
+		output := testutil.CaptureLogOutput(func() {
 			LogParameters(paramsConfig, params)
 		})
 		g.Expect(output).ToNot(ContainSubstring("items"))
@@ -841,7 +818,7 @@ func TestLogParameters(t *testing.T) {
 	t.Run("empty slice is not logged", func(t *testing.T) {
 		g := NewWithT(t)
 		params := &TestParams{Items: []string{}}
-		output := captureLogOutput(func() {
+		output := testutil.CaptureLogOutput(func() {
 			LogParameters(paramsConfig, params)
 		})
 		g.Expect(output).ToNot(ContainSubstring("items"))
@@ -850,7 +827,7 @@ func TestLogParameters(t *testing.T) {
 	t.Run("non-empty slice is logged", func(t *testing.T) {
 		g := NewWithT(t)
 		params := &TestParams{Items: []string{"a", "b"}}
-		output := captureLogOutput(func() {
+		output := testutil.CaptureLogOutput(func() {
 			LogParameters(paramsConfig, params)
 		})
 		g.Expect(output).To(ContainSubstring("[param] items: [a b]"))
@@ -859,7 +836,7 @@ func TestLogParameters(t *testing.T) {
 	t.Run("field without paramName tag is skipped", func(t *testing.T) {
 		g := NewWithT(t)
 		params := &TestParams{NoTag: "should-not-appear"}
-		output := captureLogOutput(func() {
+		output := testutil.CaptureLogOutput(func() {
 			LogParameters(paramsConfig, params)
 		})
 		g.Expect(output).ToNot(ContainSubstring("should-not-appear"))
@@ -868,7 +845,7 @@ func TestLogParameters(t *testing.T) {
 	t.Run("NoLog param with non-zero value logs hidden marker", func(t *testing.T) {
 		g := NewWithT(t)
 		params := &TestParams{SecretStr: "super-secret"}
-		output := captureLogOutput(func() {
+		output := testutil.CaptureLogOutput(func() {
 			LogParameters(paramsConfig, params)
 		})
 		g.Expect(output).To(ContainSubstring("[param] secret-str: (hidden)"))
@@ -878,7 +855,7 @@ func TestLogParameters(t *testing.T) {
 	t.Run("NoLog param with zero value is not logged", func(t *testing.T) {
 		g := NewWithT(t)
 		params := &TestParams{SecretStr: ""}
-		output := captureLogOutput(func() {
+		output := testutil.CaptureLogOutput(func() {
 			LogParameters(paramsConfig, params)
 		})
 		g.Expect(output).ToNot(ContainSubstring("secret-str"))
@@ -895,7 +872,7 @@ func TestLogParameters(t *testing.T) {
 			Items:       []string{"x"},
 			SecretStr:   "super-secret",
 		}
-		output := captureLogOutput(func() {
+		output := testutil.CaptureLogOutput(func() {
 			LogParameters(paramsConfig, params)
 		})
 		expected := strings.Join([]string{
