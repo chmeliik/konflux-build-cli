@@ -161,7 +161,7 @@ The buildah task's handling of the CA cert doesn't make a lot of sense. To impro
 the CLI will take `--rhsm-mount-ca-cert=always|auto|never`.
 
 * `always` always mounts the cert, fails if it doesn't exist on the host
-* `auto` mounts the cert for the activation key self-registration path (like the current buildah task)
+* `auto` mounts the cert for the activation key pre-registration path (like the current buildah task)
   and the entitlement cert path (unlike the current buildah task, which forgets to do this).
   If the cert doesn't exist on the host, logs a warning and proceeds.
 * `never` never mounts the cert
