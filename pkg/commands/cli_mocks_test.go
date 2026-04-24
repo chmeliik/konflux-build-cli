@@ -126,6 +126,26 @@ func (m *mockBuildahCli) ImagesJson(args *cliwrappers.BuildahImagesArgs) ([]cliw
 	return nil, nil
 }
 
+var _ cliwrappers.SubscriptionManagerCliInterface = &mockSubscriptionManagerCli{}
+
+type mockSubscriptionManagerCli struct {
+	RegisterFunc   func(params *cliwrappers.SubscriptionManagerRegisterParams) error
+	UnregisterFunc func()
+}
+
+func (m *mockSubscriptionManagerCli) Register(params *cliwrappers.SubscriptionManagerRegisterParams) error {
+	if m.RegisterFunc != nil {
+		return m.RegisterFunc(params)
+	}
+	return nil
+}
+
+func (m *mockSubscriptionManagerCli) Unregister() {
+	if m.UnregisterFunc != nil {
+		m.UnregisterFunc()
+	}
+}
+
 var _ cliwrappers.OrasCliInterface = &mockOrasCli{}
 
 type mockOrasCli struct {
