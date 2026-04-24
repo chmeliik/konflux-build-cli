@@ -45,7 +45,7 @@ spec:
   - name: prefetch-input
     value: ''
   - name: enable-cache-proxy
-    value: 'true'
+    value: 'false'
   pipelineSpec:
     description: |
       This pipeline is ideal for building multi-arch container images from a Containerfile while maintaining trust after pipeline customization.
