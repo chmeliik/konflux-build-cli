@@ -16,11 +16,19 @@ func setupSubscriptionManagerCli() (*cliwrappers.SubscriptionManagerCli, *mockEx
 	return smCli, executor
 }
 
+func setGetUIDForTest(t *testing.T, uid int) {
+	orig := *cliwrappers.ExportGetUID
+	*cliwrappers.ExportGetUID = func() int { return uid }
+	t.Cleanup(func() { *cliwrappers.ExportGetUID = orig })
+}
+
 func TestSubscriptionManagerCli_Register(t *testing.T) {
 	g := NewWithT(t)
 	ensureRetryerDisabled(t)
 
 	t.Run("should register with org and activation key", func(t *testing.T) {
+		setGetUIDForTest(t, 0)
+
 		smCli, executor := setupSubscriptionManagerCli()
 		var capturedArgs []string
 		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
@@ -43,6 +51,8 @@ func TestSubscriptionManagerCli_Register(t *testing.T) {
 	})
 
 	t.Run("should include --force when Force is true", func(t *testing.T) {
+		setGetUIDForTest(t, 0)
+
 		smCli, executor := setupSubscriptionManagerCli()
 		var capturedArgs []string
 		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
@@ -65,6 +75,8 @@ func TestSubscriptionManagerCli_Register(t *testing.T) {
 	})
 
 	t.Run("should return error when registration fails", func(t *testing.T) {
+		setGetUIDForTest(t, 0)
+
 		smCli, executor := setupSubscriptionManagerCli()
 		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
 			return "", "", 1, errors.New("command failed")
@@ -79,6 +91,21 @@ func TestSubscriptionManagerCli_Register(t *testing.T) {
 
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(Equal("command failed"))
+	})
+
+	t.Run("should return error when not root", func(t *testing.T) {
+		setGetUIDForTest(t, 1000)
+
+		smCli, _ := setupSubscriptionManagerCli()
+		params := &cliwrappers.SubscriptionManagerRegisterParams{
+			Org:           "my-org",
+			ActivationKey: "my-key",
+		}
+
+		err := smCli.Register(params)
+
+		g.Expect(err).To(HaveOccurred())
+		g.Expect(err.Error()).To(ContainSubstring("requires root"))
 	})
 }
 

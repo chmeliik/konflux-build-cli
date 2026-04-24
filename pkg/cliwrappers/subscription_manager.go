@@ -2,11 +2,15 @@ package cliwrappers
 
 import (
 	"errors"
+	"os"
 
 	l "github.com/konflux-ci/konflux-build-cli/pkg/logger"
 )
 
 var submanLog = l.Logger.WithField("logger", "SubscriptionManagerCli")
+
+// To allow mocking in unit tests
+var getUID = os.Getuid
 
 type SubscriptionManagerCliInterface interface {
 	Register(params *SubscriptionManagerRegisterParams) error
@@ -36,6 +40,9 @@ func NewSubscriptionManagerCli(executor CliExecutorInterface) (*SubscriptionMana
 
 // Register the system with Red Hat Subscription Manager.
 func (sm *SubscriptionManagerCli) Register(params *SubscriptionManagerRegisterParams) error {
+	if getUID() != 0 {
+		return errors.New("subscription-manager register requires root")
+	}
 	args := []string{"register"}
 	if params.Force {
 		args = append(args, "--force")
