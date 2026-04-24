@@ -9,9 +9,21 @@ FROM registry.access.redhat.com/ubi10/go-toolset:1.25@sha256:182645783ad0a0af4a7
 ARG TARGETOS
 ARG TARGETARCH
 
-RUN if curl -I https://google.com; then echo "Has network access!"; exit 1; fi
+USER root
 
 RUN dnf repolist
+
+RUN <<EOF
+set -euo pipefail
+# we should already have rhsm/ca before we even install subman
+ls /etc/rhsm/ca
+
+# certs should be pre-mounted for us
+ls /etc/pki/entitlement
+
+dnf -y install subscription-manager
+subscription-manager status
+EOF
 
 USER 1001
 
