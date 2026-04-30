@@ -334,9 +334,17 @@ func (c *TestRunnerContainer) GetFileContent(path string) (string, error) {
 
 func (c *TestRunnerContainer) ExecuteBuildCli(args ...string) error {
 	if Debug {
-		return c.debugBuildCli(args...)
+		_, _, err := c.debugBuildCli(args...)
+		return err
 	}
 	return c.ExecuteCommand(kbcPathInContainer, args...)
+}
+
+func (c *TestRunnerContainer) ExecuteBuildCliWithOutput(args ...string) (string, string, error) {
+	if Debug {
+		return c.debugBuildCli(args...)
+	}
+	return c.ExecuteCommandWithOutput(kbcPathInContainer, args...)
 }
 
 // ExecuteCommandWithOutput executes a command in the container and returns
@@ -360,16 +368,16 @@ func (c *TestRunnerContainer) ExecuteCommand(command string, args ...string) err
 	return err
 }
 
-func (c *TestRunnerContainer) debugBuildCli(cliArgs ...string) error {
+func (c *TestRunnerContainer) debugBuildCli(cliArgs ...string) (string, string, error) {
 	c.ensureContainerRunning()
 
 	dlvPath, err := getDlvPath()
 	if err != nil {
-		return err
+		return "", "", err
 	}
 	err = c.CopyFileIntoContainer(dlvPath, "/usr/bin/")
 	if err != nil {
-		return err
+		return "", "", err
 	}
 
 	execArgs := []string{"exec", c.name}
@@ -384,7 +392,7 @@ func (c *TestRunnerContainer) debugBuildCli(cliArgs ...string) error {
 		l.Logger.Infof("[stdout]:\n%s\n", stdout)
 		l.Logger.Infof("[stderr]:\n%s\n", stderr)
 	}
-	return err
+	return stdout, stderr, err
 }
 
 func getDlvPath() (string, error) {
