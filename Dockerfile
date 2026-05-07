@@ -11,8 +11,6 @@ ARG TARGETARCH
 
 USER root
 
-RUN dnf repolist
-
 RUN <<EOF
 set -euo pipefail
 # we should already have rhsm/ca before we even install subman
