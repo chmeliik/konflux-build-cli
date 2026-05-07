@@ -9,22 +9,6 @@ FROM registry.access.redhat.com/ubi10/go-toolset:1.25@sha256:182645783ad0a0af4a7
 ARG TARGETOS
 ARG TARGETARCH
 
-USER root
-
-RUN <<EOF
-set -euo pipefail
-# we should already have rhsm/ca before we even install subman
-ls /etc/rhsm/ca
-
-# certs should be pre-mounted for us
-ls /etc/pki/entitlement
-
-dnf -y install subscription-manager
-subscription-manager status
-EOF
-
-USER 1001
-
 WORKDIR /workspace
 # Copy the Go Modules manifests
 COPY --chown=1001:0 go.mod go.mod
@@ -75,5 +59,25 @@ LABEL env.from.param.2=$ENV_FROM_PARAM_2
 
 RUN --mount=type=secret,id=pipelines-as-code-secret/password \
     stat /run/secrets/pipelines-as-code-secret/password
+
+USER root
+
+RUN <<EOF
+set -euo pipefail
+
+if rpm -q subscription-manager; then
+    echo subscription-manager should not be installed yet
+    exit 1
+fi
+
+# we should already have rhsm/ca before we even install subman
+ls /etc/rhsm/ca
+
+# certs should be pre-mounted for us
+ls /etc/pki/entitlement
+
+microdnf -y install subscription-manager
+subscription-manager status
+EOF
 
 ENTRYPOINT ["/usr/local/bin/konflux-build-cli"]
