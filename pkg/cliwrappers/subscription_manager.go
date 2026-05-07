@@ -3,6 +3,7 @@ package cliwrappers
 import (
 	"errors"
 	"os"
+	"slices"
 
 	l "github.com/konflux-ci/konflux-build-cli/pkg/logger"
 )
@@ -47,7 +48,13 @@ func (sm *SubscriptionManagerCli) Register(params *SubscriptionManagerRegisterPa
 	if params.Force {
 		args = append(args, "--force")
 	}
+
+	redactedArgs := slices.Clone(args)
+
 	args = append(args, "--org", params.Org, "--activationkey", params.ActivationKey)
+	redactedArgs = append(redactedArgs, "--org", "***", "--activationkey", "***")
+
+	submanLog.Debugf("Running command: %s", shellJoin("subscription-manager", redactedArgs...))
 
 	command := func() (string, string, int, error) {
 		return sm.Executor.Execute(Cmd{Name: "subscription-manager", Args: args})
@@ -67,6 +74,7 @@ func (sm *SubscriptionManagerCli) Register(params *SubscriptionManagerRegisterPa
 
 // Unregister the system from Red Hat Subscription Manager (best-effort).
 func (sm *SubscriptionManagerCli) Unregister() {
+	submanLog.Debugf("Running command: subscription-manager unregister")
 	_, stderr, _, err := sm.Executor.Execute(Cmd{Name: "subscription-manager", Args: []string{"unregister"}})
 	if err != nil {
 		submanLog.Warn("subscription-manager unregister command failed")

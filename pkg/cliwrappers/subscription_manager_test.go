@@ -42,12 +42,18 @@ func TestSubscriptionManagerCli_Register(t *testing.T) {
 			ActivationKey: "my-key",
 		}
 
-		err := smCli.Register(params)
+		logOutput := testutil.CaptureLogOutput(func() {
+			err := smCli.Register(params)
+			g.Expect(err).ToNot(HaveOccurred())
+		})
 
-		g.Expect(err).ToNot(HaveOccurred())
 		g.Expect(capturedArgs).To(Equal([]string{
 			"register", "--org", "my-org", "--activationkey", "my-key",
 		}))
+
+		g.Expect(logOutput).To(ContainSubstring("subscription-manager register --org '***' --activationkey '***'"))
+		g.Expect(logOutput).ToNot(ContainSubstring("my-org"))
+		g.Expect(logOutput).ToNot(ContainSubstring("my-key"))
 	})
 
 	t.Run("should include --force when Force is true", func(t *testing.T) {
