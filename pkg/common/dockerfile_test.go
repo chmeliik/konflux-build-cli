@@ -69,6 +69,21 @@ func TestSearchDockerfileNotFound(t *testing.T) {
 				opts.SourceDir = t.TempDir()
 			},
 		},
+		{
+			name: "default search does not fall back to source root",
+			searchOpts: DockerfileSearchOpts{
+				SourceDir:  "delay to setup",
+				ContextDir: "components/app",
+				Dockerfile: "",
+			},
+			setup: func(t *testing.T, tc *TestCase) {
+				opts := &tc.searchOpts
+				opts.SourceDir = t.TempDir()
+				createDir(t, opts.SourceDir, opts.ContextDir)
+				writeFile(t, filepath.Join(opts.SourceDir, "Containerfile"), dockerfileContent)
+				writeFile(t, filepath.Join(opts.SourceDir, "Dockerfile"), dockerfileContent)
+			},
+		},
 	}
 
 	for _, tc := range testCases {
@@ -149,7 +164,7 @@ func TestSearchDockerfile(t *testing.T) {
 			expectedDockerfile: "/components/app/Dockerfile",
 		},
 		{
-			name: "Searched ./Container by default",
+			name: "Containerfile takes precedence by default",
 			searchOpts: DockerfileSearchOpts{
 				SourceDir:  "delay to setup",
 				ContextDir: ".",
@@ -164,7 +179,7 @@ func TestSearchDockerfile(t *testing.T) {
 			expectedDockerfile: "/Containerfile",
 		},
 		{
-			name: "Fallback to search ./Dockerfile",
+			name: "Dockerfile found by default if no Containerfile",
 			searchOpts: DockerfileSearchOpts{
 				SourceDir:  "delay to setup",
 				ContextDir: ".",
@@ -176,6 +191,21 @@ func TestSearchDockerfile(t *testing.T) {
 				writeFile(t, filepath.Join(opts.SourceDir, "Dockerfile"), dockerfileContent)
 			},
 			expectedDockerfile: "/Dockerfile",
+		},
+		{
+			name: "default search in context dir",
+			searchOpts: DockerfileSearchOpts{
+				SourceDir:  "delay to setup",
+				ContextDir: "components/app",
+				Dockerfile: "",
+			},
+			setup: func(t *testing.T, tc *TestCase) {
+				opts := &tc.searchOpts
+				opts.SourceDir = t.TempDir()
+				path := createDir(t, opts.SourceDir, opts.ContextDir)
+				writeFile(t, filepath.Join(path, "Containerfile"), dockerfileContent)
+			},
+			expectedDockerfile: "/components/app/Containerfile",
 		},
 		{
 			name: "absolute context dir path",

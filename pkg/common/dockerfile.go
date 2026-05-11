@@ -49,37 +49,31 @@ func SearchDockerfile(opts DockerfileSearchOpts) (string, error) {
 		contextDir = "."
 	}
 
-	var _search = func(dockerfile string) (string, error) {
-		possibleDockerfiles := []string{
-			joinOrReplace(opts.SourceDir, contextDir, dockerfile),
-			joinOrReplace(opts.SourceDir, dockerfile),
+	var possibleDockerfiles []string
+	if opts.Dockerfile != "" {
+		// Look in the context dir first, then in the source dir.
+		// This is the opposite order compared to buildah, kept for backwards compatibility.
+		possibleDockerfiles = []string{
+			joinOrReplace(opts.SourceDir, contextDir, opts.Dockerfile),
+			joinOrReplace(opts.SourceDir, opts.Dockerfile),
 		}
-		for _, dockerfilePath := range possibleDockerfiles {
-			if _, err := os.Stat(dockerfilePath); err != nil {
-				if os.IsNotExist(err) {
-					continue
-				}
-				return "", fmt.Errorf("checking dockerfile existence: %w", err)
-			}
-			return dockerfilePath, nil
+	} else {
+		// Look for Containerfile/Dockerfile (in that order) in context dir, same as buildah
+		possibleDockerfiles = []string{
+			joinOrReplace(opts.SourceDir, contextDir, "Containerfile"),
+			joinOrReplace(opts.SourceDir, contextDir, "Dockerfile"),
 		}
-		// No Dockerfile is found.
-		return "", nil
 	}
 
-	if opts.Dockerfile == "" {
-		for _, dockerfile := range []string{"./Containerfile", "./Dockerfile"} {
-			dockerfilePath, err := _search(dockerfile)
-			if err != nil {
-				return "", err
+	for _, dockerfilePath := range possibleDockerfiles {
+		if _, err := os.Stat(dockerfilePath); err != nil {
+			if os.IsNotExist(err) {
+				continue
 			}
-			if dockerfilePath != "" {
-				return dockerfilePath, nil
-			}
+			return "", fmt.Errorf("checking dockerfile existence: %w", err)
 		}
-		// Tried all. Nothing is found.
-		return "", nil
+		return dockerfilePath, nil
 	}
 
-	return _search(opts.Dockerfile)
+	return "", nil
 }
