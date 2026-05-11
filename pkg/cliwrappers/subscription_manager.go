@@ -2,11 +2,16 @@ package cliwrappers
 
 import (
 	"errors"
+	"os"
+	"slices"
 
 	l "github.com/konflux-ci/konflux-build-cli/pkg/logger"
 )
 
 var submanLog = l.Logger.WithField("logger", "SubscriptionManagerCli")
+
+// To allow mocking in unit tests
+var getUID = os.Getuid
 
 type SubscriptionManagerCliInterface interface {
 	Register(params *SubscriptionManagerRegisterParams) error
@@ -36,11 +41,20 @@ func NewSubscriptionManagerCli(executor CliExecutorInterface) (*SubscriptionMana
 
 // Register the system with Red Hat Subscription Manager.
 func (sm *SubscriptionManagerCli) Register(params *SubscriptionManagerRegisterParams) error {
+	if getUID() != 0 {
+		return errors.New("subscription-manager register requires root")
+	}
 	args := []string{"register"}
 	if params.Force {
 		args = append(args, "--force")
 	}
+
+	redactedArgs := slices.Clone(args)
+
 	args = append(args, "--org", params.Org, "--activationkey", params.ActivationKey)
+	redactedArgs = append(redactedArgs, "--org", "***", "--activationkey", "***")
+
+	submanLog.Debugf("Running command: %s", shellJoin("subscription-manager", redactedArgs...))
 
 	command := func() (string, string, int, error) {
 		return sm.Executor.Execute(Cmd{Name: "subscription-manager", Args: args})
@@ -60,6 +74,7 @@ func (sm *SubscriptionManagerCli) Register(params *SubscriptionManagerRegisterPa
 
 // Unregister the system from Red Hat Subscription Manager (best-effort).
 func (sm *SubscriptionManagerCli) Unregister() {
+	submanLog.Debugf("Running command: subscription-manager unregister")
 	_, stderr, _, err := sm.Executor.Execute(Cmd{Name: "subscription-manager", Args: []string{"unregister"}})
 	if err != nil {
 		submanLog.Warn("subscription-manager unregister command failed")
