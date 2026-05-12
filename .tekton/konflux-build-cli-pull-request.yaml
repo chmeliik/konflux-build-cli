@@ -30,10 +30,8 @@ spec:
   - name: build-platforms
     value:
     - linux/x86_64
-  - name: path-context
-    value: /tmp
   - name: dockerfile
-    value: Dockerfile
+    value: /usr/bin/konflux-build-cli
   - name: build-args
     value:
       - BUILDARG_FROM_PARAM_1=arg-foo
