@@ -39,12 +39,62 @@ func listDir(path string) ([]string, error) {
 	return filenames, nil
 }
 
+func Test_Build_effectiveContextDir(t *testing.T) {
+	tests := []struct {
+		name     string
+		source   string
+		context  string
+		expected string
+	}{
+		{
+			name:     "no source, relative context",
+			context:  "ctx",
+			expected: "ctx",
+		},
+		{
+			name:     "no source, absolute context",
+			context:  "/abs/path",
+			expected: "/abs/path",
+		},
+		{
+			name:     "source set, relative context",
+			source:   "/src",
+			context:  "ctx",
+			expected: "/src/ctx",
+		},
+		{
+			name:     "source set, dot context",
+			source:   "/src",
+			context:  ".",
+			expected: "/src",
+		},
+		{
+			name:     "source set, absolute context",
+			source:   "/src",
+			context:  "/abs/path",
+			expected: "/abs/path",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			c := &Build{Params: &BuildParams{Source: tc.source, Context: tc.context}}
+			g.Expect(c.effectiveContextDir()).To(Equal(tc.expected))
+		})
+	}
+}
+
 func Test_Build_validateParams(t *testing.T) {
 	g := NewWithT(t)
 
 	tempDir := t.TempDir()
 
 	os.WriteFile(filepath.Join(tempDir, "notadir"), []byte("content"), 0644)
+
+	sourceDir := filepath.Join(tempDir, "source")
+	os.MkdirAll(filepath.Join(sourceDir, "ctx"), 0755)
+	os.MkdirAll(filepath.Join(tempDir, "outside-ctx"), 0755)
 
 	tests := []struct {
 		name         string
@@ -295,6 +345,63 @@ func Test_Build_validateParams(t *testing.T) {
 			errExpected:  true,
 			errSubstring: "requires rhsm-activation-mount or rhsm-activation-preregister",
 		},
+		{
+			name: "should allow source with relative context inside source",
+			params: BuildParams{
+				OutputRef: "quay.io/org/image:tag",
+				Source:    sourceDir,
+				Context:   "ctx",
+			},
+			errExpected: false,
+		},
+		{
+			name: "should allow source with dot context",
+			params: BuildParams{
+				OutputRef: "quay.io/org/image:tag",
+				Source:    sourceDir,
+				Context:   ".",
+			},
+			errExpected: false,
+		},
+		{
+			name: "should fail when context escapes source via ..",
+			params: BuildParams{
+				OutputRef: "quay.io/org/image:tag",
+				Source:    sourceDir,
+				Context:   "../outside-ctx",
+			},
+			errExpected:  true,
+			errSubstring: "is outside source directory",
+		},
+		{
+			name: "should fail when absolute context is outside source",
+			params: BuildParams{
+				OutputRef: "quay.io/org/image:tag",
+				Source:    sourceDir,
+				Context:   filepath.Join(tempDir, "outside-ctx"),
+			},
+			errExpected:  true,
+			errSubstring: "is outside source directory",
+		},
+		{
+			name: "should allow source with absolute context inside source",
+			params: BuildParams{
+				OutputRef: "quay.io/org/image:tag",
+				Source:    sourceDir,
+				Context:   filepath.Join(sourceDir, "ctx"),
+			},
+			errExpected: false,
+		},
+		{
+			name: "should fail when source directory does not exist",
+			params: BuildParams{
+				OutputRef: "quay.io/org/image:tag",
+				Source:    "/no/such/directory",
+				Context:   filepath.Join(sourceDir, "ctx"),
+			},
+			errExpected:  true,
+			errSubstring: "no such file or directory",
+		},
 	}
 
 	for _, tc := range tests {
@@ -325,6 +432,7 @@ func Test_Build_detectContainerfile(t *testing.T) {
 		files            []string // files to create (paths relative to tempDir)
 		containerfileArg string
 		contextArg       string
+		sourceArg        string
 		expectedPath     string
 		expectError      bool
 		errorContains    string
@@ -364,6 +472,34 @@ func Test_Build_detectContainerfile(t *testing.T) {
 			expectError:   true,
 			errorContains: "containerfile does not exist",
 		},
+		{
+			name:         "should auto-detect Containerfile in source dir",
+			files:        []string{"src/Containerfile"},
+			sourceArg:    "src",
+			expectedPath: "src/Containerfile",
+		},
+		{
+			name:         "should auto-detect Containerfile in source with context subdir",
+			files:        []string{"src/ctx/Containerfile"},
+			sourceArg:    "src",
+			contextArg:   "ctx",
+			expectedPath: "src/ctx/Containerfile",
+		},
+		{
+			name:             "should use explicit containerfile within source",
+			files:            []string{"src/custom.dockerfile"},
+			sourceArg:        "src",
+			containerfileArg: "custom.dockerfile",
+			expectedPath:     "src/custom.dockerfile",
+		},
+		{
+			name:             "should fail when containerfile is outside source dir",
+			files:            []string{"outside/Containerfile", "src/Containerfile"},
+			sourceArg:        "src",
+			containerfileArg: "../outside/Containerfile",
+			expectError:      true,
+			errorContains:    "is outside source directory",
+		},
 	}
 
 	for _, tc := range tests {
@@ -391,6 +527,7 @@ func Test_Build_detectContainerfile(t *testing.T) {
 				Params: &BuildParams{
 					Context:       tc.contextArg,
 					Containerfile: tc.containerfileArg,
+					Source:        tc.sourceArg,
 				},
 			}
 
@@ -1247,7 +1384,10 @@ func Test_Build_Run(t *testing.T) {
 		expectedContainerfile := filepath.Join(tempDir, "Containerfile")
 		expectedSecretSrc := filepath.Join(tempDir, "secrets/token")
 
+		buildCalled := false
 		_mockBuildahCli.BuildFunc = func(args *cliwrappers.BuildahBuildArgs) error {
+			buildCalled = true
+
 			currentDir, err := os.Getwd()
 			g.Expect(err).ToNot(HaveOccurred())
 
@@ -1264,10 +1404,64 @@ func Test_Build_Run(t *testing.T) {
 
 		err := c.Run()
 		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(buildCalled).To(BeTrue())
 
 		// Check that the Run() function restored the cwd on exit
 		restoredDir, _ := os.Getwd()
 		g.Expect(restoredDir).To(Equal(tempDir))
+	})
+
+	t.Run("should make contextdir and containerfile paths relative to source dir", func(t *testing.T) {
+		tempDir := t.TempDir()
+		testutil.WriteFileTree(t, tempDir, map[string]string{
+			"source/context/foo":   "bar",
+			"source/Containerfile": "FROM scratch",
+		})
+
+		_mockBuildahCli := &mockBuildahCli{}
+		_mockResultsWriter := &mockResultsWriter{}
+		c := &Build{
+			CliWrappers: BuildCliWrappers{BuildahCli: _mockBuildahCli},
+			Params: &BuildParams{
+				OutputRef:      "quay.io/org/image:tag",
+				Source:         filepath.Join(tempDir, "source"),
+				Context:        "context",
+				Containerfile:  "Containerfile",
+				WorkdirMount:   "/workdir",
+				SkipInjections: true,
+			},
+			ResultsWriter: _mockResultsWriter,
+		}
+
+		expectedContextDir := filepath.Join(tempDir, "source", "context")
+
+		buildCalled := false
+		_mockBuildahCli.BuildFunc = func(args *cliwrappers.BuildahBuildArgs) error {
+			buildCalled = true
+
+			currentDir, err := os.Getwd()
+			g.Expect(err).ToNot(HaveOccurred())
+			g.Expect(currentDir).To(Equal(expectedContextDir))
+
+			g.Expect(args.ContextDir).To(Equal(expectedContextDir))
+			g.Expect(args.Containerfile).To(Equal(filepath.Join(tempDir, "source", "Containerfile")))
+
+			var workdirVolume *cliwrappers.BuildahVolume
+			for i := range args.Volumes {
+				if args.Volumes[i].ContainerDir == "/workdir" {
+					workdirVolume = &args.Volumes[i]
+					break
+				}
+			}
+			g.Expect(workdirVolume).ToNot(BeNil())
+			g.Expect(workdirVolume.HostDir).To(Equal(expectedContextDir))
+
+			return nil
+		}
+
+		err := c.Run()
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(buildCalled).To(BeTrue())
 	})
 
 	// Unit-test the full RHSM pre-registration flow. Ideally this would be a real integration test,
