@@ -72,6 +72,11 @@ type BuildParams struct {
 	RHSMActivationMount        string
 	RHSMActivationPreregister  bool
 	RHSMMountCACerts           string
+	Squash                     bool
+	OmitHistory                bool
+	NoCache                    bool
+	CapAdd                     []string
+	CapDrop                    []string
 	ExtraArgs                  []string
 }
 
@@ -358,6 +363,23 @@ func runBuildWithOutput(container *TestRunnerContainer, buildParams BuildParams)
 	if buildParams.RHSMMountCACerts != "" {
 		args = append(args, "--rhsm-mount-ca-certs", buildParams.RHSMMountCACerts)
 	}
+	if buildParams.Squash {
+		args = append(args, "--squash")
+	}
+	if buildParams.OmitHistory {
+		args = append(args, "--omit-history")
+	}
+	if buildParams.NoCache {
+		args = append(args, "--no-cache")
+	}
+	if len(buildParams.CapAdd) > 0 {
+		args = append(args, "--cap-add")
+		args = append(args, buildParams.CapAdd...)
+	}
+	if len(buildParams.CapDrop) > 0 {
+		args = append(args, "--cap-drop")
+		args = append(args, buildParams.CapDrop...)
+	}
 	if len(buildParams.ExtraArgs) > 0 {
 		args = append(args, "--")
 		args = append(args, buildParams.ExtraArgs...)
@@ -397,6 +419,10 @@ func writeContainerfile(contextDir, content string) {
 	Expect(err).ToNot(HaveOccurred())
 }
 
+type ociHistory struct {
+	CreatedBy string `json:"created_by"`
+}
+
 type containerImageMeta struct {
 	digest      string
 	created     string
@@ -404,6 +430,7 @@ type containerImageMeta struct {
 	annotations map[string]string
 	envs        map[string]string
 	layer_ids   []string
+	history     []ociHistory
 }
 
 func getImageMeta(container *TestRunnerContainer, imageRef string) containerImageMeta {
@@ -420,6 +447,7 @@ func getImageMeta(container *TestRunnerContainer, imageRef string) containerImag
 			Rootfs struct {
 				DiffIDs []string `json:"diff_ids"`
 			} `json:"rootfs"`
+			History []ociHistory `json:"history"`
 		}
 		ImageAnnotations map[string]string
 		// This field has the same value as the output of
@@ -443,6 +471,7 @@ func getImageMeta(container *TestRunnerContainer, imageRef string) containerImag
 		annotations: inspect.ImageAnnotations,
 		envs:        envs,
 		layer_ids:   inspect.OCIv1.Rootfs.DiffIDs,
+		history:     inspect.OCIv1.History,
 	}
 }
 
@@ -1538,11 +1567,11 @@ COPY hello.txt /hello.txt
 				// E.g. if the order of labels in the file was random, it *would* break reproducibility.
 				AddLegacyLabels: true,
 				Labels:          []string{"label1=foo", "label2=bar"},
+				// We want to build the image twice and verify reproducibility, avoid caching
+				NoCache: true,
 				ExtraArgs: []string{
 					// Ensure the image config will be exactly the same regardles of the host OS/architecture
 					"--platform", "linux/amd64",
-					// We want to build the image twice and verify reproducibility, avoid caching
-					"--no-cache",
 				},
 			}
 
@@ -3484,5 +3513,93 @@ RUN echo modified > /activation-key/activationkey && \
 		// (and a dependency on the actual RHSM servers) or a local RHSM deployment
 		// (which is a nightmare). Pre-registration has unit test coverage instead.
 		// t.Run("ActivationKeyPreregistration", func(t *testing.T) {})
+	})
+
+	t.Run("Squash", func(t *testing.T) {
+		SetupGomega(t)
+
+		contextDir := setupTestContext(t)
+		writeContainerfile(contextDir, fmt.Sprintf(`
+FROM %s
+RUN echo one > /file1.txt
+RUN echo two > /file2.txt
+`, baseImage))
+
+		outputRef := "localhost/test-squash:" + GenerateUniqueTag(t)
+
+		buildParams := BuildParams{
+			Context:   contextDir,
+			OutputRef: outputRef,
+			Squash:    true,
+		}
+
+		container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+		err := runBuild(container, buildParams)
+		Expect(err).ToNot(HaveOccurred())
+
+		imageMeta := getImageMeta(container, outputRef)
+		Expect(imageMeta.layer_ids).To(HaveLen(1),
+			"--squash should collapse all layers into one")
+	})
+
+	t.Run("OmitHistory", func(t *testing.T) {
+		SetupGomega(t)
+
+		contextDir := setupTestContext(t)
+		writeContainerfile(contextDir, `
+FROM scratch
+LABEL test.label="omit-history-test"
+`)
+
+		outputRef := "localhost/test-omit-history:" + GenerateUniqueTag(t)
+
+		buildParams := BuildParams{
+			Context:     contextDir,
+			OutputRef:   outputRef,
+			OmitHistory: true,
+		}
+
+		container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+		err := runBuild(container, buildParams)
+		Expect(err).ToNot(HaveOccurred())
+
+		imageMeta := getImageMeta(container, outputRef)
+		Expect(imageMeta.history).To(BeEmpty(),
+			"--omit-history should produce no history entries")
+	})
+
+	t.Run("Capabilities", func(t *testing.T) {
+		SetupGomega(t)
+
+		contextDir := setupTestContext(t)
+		writeContainerfile(contextDir, fmt.Sprintf(`
+FROM %s
+
+RUN bash -e <<'EOF'
+while read -r key value; do
+    if [[ $key == 'CapEff:' ]]; then
+        echo "CapEff: $value"
+    fi
+done < /proc/self/status
+EOF
+`, baseImage))
+
+		outputRef := "localhost/test-devices:" + GenerateUniqueTag(t)
+
+		buildParams := BuildParams{
+			Context:   contextDir,
+			OutputRef: outputRef,
+			CapAdd:    []string{"CHOWN,DAC_OVERRIDE", "DAC_READ_SEARCH"},
+			CapDrop:   []string{"ALL"},
+		}
+
+		container := setupBuildContainerWithCleanup(t, buildParams, nil)
+
+		_, stderr, err := runBuildWithOutput(container, buildParams)
+		Expect(err).ToNot(HaveOccurred())
+		// Should have dropped everything but the first 3 caps (0...00111 binary)
+		Expect(stderr).To(ContainSubstring("CapEff: 0000000000000007"))
 	})
 }

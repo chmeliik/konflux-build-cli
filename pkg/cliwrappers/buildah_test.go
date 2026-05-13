@@ -277,6 +277,97 @@ func TestBuildahCli_Build(t *testing.T) {
 		g.Expect(err).ToNot(HaveOccurred())
 		g.Expect(capturedArgs).To(ContainElement("--tls-verify=true"))
 	})
+
+	t.Run("should pass --no-cache", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedArgs []string
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			capturedArgs = cmd.Args
+			return "", "", 0, nil
+		}
+
+		err := buildahCli.Build(&cliwrappers.BuildahBuildArgs{
+			Containerfile: containerfile, ContextDir: contextDir, OutputRef: outputRef,
+			NoCache: true,
+		})
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(capturedArgs).To(ContainElement("--no-cache"))
+	})
+
+	t.Run("should pass SecurityOpts as separate --security-opt args", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedArgs []string
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			capturedArgs = cmd.Args
+			return "", "", 0, nil
+		}
+
+		err := buildahCli.Build(&cliwrappers.BuildahBuildArgs{
+			Containerfile: containerfile, ContextDir: contextDir, OutputRef: outputRef,
+			SecurityOpts: []string{"seccomp=unconfined", "label=disable"},
+		})
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(capturedArgs).To(ContainElement("--security-opt=seccomp=unconfined"))
+		g.Expect(capturedArgs).To(ContainElement("--security-opt=label=disable"))
+		g.Expect(capturedArgs[len(capturedArgs)-1]).To(Equal(contextDir))
+	})
+
+	t.Run("should pass Cap{Add,Drop} as separate --cap-{add,drop} args", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedArgs []string
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			capturedArgs = cmd.Args
+			return "", "", 0, nil
+		}
+
+		err := buildahCli.Build(&cliwrappers.BuildahBuildArgs{
+			Containerfile: containerfile, ContextDir: contextDir, OutputRef: outputRef,
+			CapAdd:  []string{"ALL", "SYS_ADMIN"},
+			CapDrop: []string{"MKNOD", "CAP_SETUID,CAP_SETGID"},
+		})
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(capturedArgs).To(ContainElement("--cap-add=ALL"))
+		g.Expect(capturedArgs).To(ContainElement("--cap-add=SYS_ADMIN"))
+		g.Expect(capturedArgs).To(ContainElement("--cap-drop=MKNOD"))
+		g.Expect(capturedArgs).To(ContainElement("--cap-drop=CAP_SETUID,CAP_SETGID"))
+		g.Expect(capturedArgs[len(capturedArgs)-1]).To(Equal(contextDir))
+	})
+
+	t.Run("should pass Devices as separate --device args", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedArgs []string
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			capturedArgs = cmd.Args
+			return "", "", 0, nil
+		}
+
+		err := buildahCli.Build(&cliwrappers.BuildahBuildArgs{
+			Containerfile: containerfile, ContextDir: contextDir, OutputRef: outputRef,
+			Devices: []string{"/dev/fuse", "/dev/sdc"},
+		})
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(capturedArgs).To(ContainElement("--device=/dev/fuse"))
+		g.Expect(capturedArgs).To(ContainElement("--device=/dev/sdc"))
+		g.Expect(capturedArgs[len(capturedArgs)-1]).To(Equal(contextDir))
+	})
+
+	t.Run("should pass Ulimits as separate --ulimit args", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedArgs []string
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			capturedArgs = cmd.Args
+			return "", "", 0, nil
+		}
+
+		err := buildahCli.Build(&cliwrappers.BuildahBuildArgs{
+			Containerfile: containerfile, ContextDir: contextDir, OutputRef: outputRef,
+			Ulimits: []string{"nofile=4096:4096", "nproc=1024:2048"},
+		})
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(capturedArgs).To(ContainElement("--ulimit=nofile=4096:4096"))
+		g.Expect(capturedArgs).To(ContainElement("--ulimit=nproc=1024:2048"))
+		g.Expect(capturedArgs[len(capturedArgs)-1]).To(Equal(contextDir))
+	})
 }
 
 func findDigestFile(args []string) string {

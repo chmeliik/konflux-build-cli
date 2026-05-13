@@ -360,6 +360,54 @@ var BuildParamsConfig = map[string]common.Parameter{
 		DefaultValue: "true",
 		Usage:        "Require HTTPS and verify certificates when pushing to the destination registry.",
 	},
+	"squash": {
+		Name:       "squash",
+		EnvVarName: "KBC_BUILD_SQUASH",
+		TypeKind:   reflect.Bool,
+		Usage:      "Squash all layers, including those from base image(s), into one single layer.",
+	},
+	"omit-history": {
+		Name:       "omit-history",
+		EnvVarName: "KBC_BUILD_OMIT_HISTORY",
+		TypeKind:   reflect.Bool,
+		Usage:      "Omit build history information in the built image.",
+	},
+	"no-cache": {
+		Name:       "no-cache",
+		EnvVarName: "KBC_BUILD_NO_CACHE",
+		TypeKind:   reflect.Bool,
+		Usage:      "Do not use existing cached images for the container build.",
+	},
+	"security-opts": {
+		Name:       "security-opts",
+		EnvVarName: "KBC_BUILD_SECURITY_OPTS",
+		TypeKind:   reflect.Slice,
+		Usage:      "Security options to pass to buildah's --security-opt.",
+	},
+	"cap-add": {
+		Name:       "cap-add",
+		EnvVarName: "KBC_BUILD_CAP_ADD",
+		TypeKind:   reflect.Slice,
+		Usage:      "Capabilities to add when running the build.",
+	},
+	"cap-drop": {
+		Name:       "cap-drop",
+		EnvVarName: "KBC_BUILD_CAP_DROP",
+		TypeKind:   reflect.Slice,
+		Usage:      "Capabilities to drop when running the build.",
+	},
+	"devices": {
+		Name:       "devices",
+		EnvVarName: "KBC_BUILD_DEVICES",
+		TypeKind:   reflect.Slice,
+		Usage:      "Additional devices to provide during the build.",
+	},
+	"ulimits": {
+		Name:       "ulimits",
+		EnvVarName: "KBC_BUILD_ULIMITS",
+		TypeKind:   reflect.Slice,
+		Usage:      "Resource limits to pass to buildah's --ulimit.",
+	},
 }
 
 type BuildParams struct {
@@ -407,6 +455,14 @@ type BuildParams struct {
 	RHSMMountCACerts           string   `paramName:"rhsm-mount-ca-certs"`
 	SrcTLSVerify               bool     `paramName:"src-tls-verify"`
 	DestTLSVerify              bool     `paramName:"dest-tls-verify"`
+	Squash                     bool     `paramName:"squash"`
+	OmitHistory                bool     `paramName:"omit-history"`
+	NoCache                    bool     `paramName:"no-cache"`
+	SecurityOpts               []string `paramName:"security-opts"`
+	CapAdd                     []string `paramName:"cap-add"`
+	CapDrop                    []string `paramName:"cap-drop"`
+	Devices                    []string `paramName:"devices"`
+	Ulimits                    []string `paramName:"ulimits"`
 	ExtraArgs                  []string // Additional arguments to pass to buildah build
 }
 
@@ -2224,6 +2280,14 @@ func (c *Build) buildImage() (err error) {
 		Target:           c.Params.Target,
 		SkipUnusedStages: &c.Params.SkipUnusedStages,
 		TLSVerify:        &c.Params.SrcTLSVerify,
+		Squash:           c.Params.Squash,
+		OmitHistory:      c.Params.OmitHistory,
+		NoCache:          c.Params.NoCache,
+		SecurityOpts:     c.Params.SecurityOpts,
+		CapAdd:           c.Params.CapAdd,
+		CapDrop:          c.Params.CapDrop,
+		Devices:          c.Params.Devices,
+		Ulimits:          c.Params.Ulimits,
 		Wrapper:          c.chooseBuildahWrappers(),
 	}
 	if c.Params.WorkdirMount != "" {

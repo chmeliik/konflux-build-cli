@@ -1624,6 +1624,60 @@ func Test_Build_Run(t *testing.T) {
 		g.Expect(buildCalled).To(BeTrue())
 		g.Expect(pushCalled).To(BeTrue())
 	})
+
+	t.Run("should pass --no-cache to buildah build", func(t *testing.T) {
+		beforeEach()
+		c.Params.NoCache = true
+
+		buildCalled := false
+		_mockBuildahCli.BuildFunc = func(args *cliwrappers.BuildahBuildArgs) error {
+			buildCalled = true
+			g.Expect(args.NoCache).To(BeTrue())
+			return nil
+		}
+
+		err := c.Run()
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(buildCalled).To(BeTrue())
+	})
+
+	t.Run("should pass security-related array args to buildah", func(t *testing.T) {
+		beforeEach()
+		c.Params.SecurityOpts = []string{"seccomp=unconfined"}
+		c.Params.CapAdd = []string{"SYS_ADMIN"}
+		c.Params.CapDrop = []string{"NET_RAW"}
+		c.Params.Devices = []string{"/dev/fuse"}
+
+		buildCalled := false
+		_mockBuildahCli.BuildFunc = func(args *cliwrappers.BuildahBuildArgs) error {
+			buildCalled = true
+			g.Expect(args.SecurityOpts).To(Equal([]string{"seccomp=unconfined"}))
+			g.Expect(args.CapAdd).To(Equal([]string{"SYS_ADMIN"}))
+			g.Expect(args.CapDrop).To(Equal([]string{"NET_RAW"}))
+			g.Expect(args.Devices).To(Equal([]string{"/dev/fuse"}))
+			return nil
+		}
+
+		err := c.Run()
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(buildCalled).To(BeTrue())
+	})
+
+	t.Run("should pass ulimits to buildah", func(t *testing.T) {
+		beforeEach()
+		c.Params.Ulimits = []string{"nofile=4096:4096", "nproc=1024:2048"}
+
+		buildCalled := false
+		_mockBuildahCli.BuildFunc = func(args *cliwrappers.BuildahBuildArgs) error {
+			buildCalled = true
+			g.Expect(args.Ulimits).To(Equal([]string{"nofile=4096:4096", "nproc=1024:2048"}))
+			return nil
+		}
+
+		err := c.Run()
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(buildCalled).To(BeTrue())
+	})
 }
 
 func Test_goArchToArchitectureLabel(t *testing.T) {

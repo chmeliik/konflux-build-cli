@@ -70,6 +70,14 @@ type BuildahBuildArgs struct {
 	Target           string
 	SkipUnusedStages *bool
 	TLSVerify        *bool
+	Squash           bool
+	OmitHistory      bool
+	NoCache          bool
+	SecurityOpts     []string
+	CapAdd           []string
+	CapDrop          []string
+	Devices          []string
+	Ulimits          []string
 	ExtraArgs        []string
 	Wrapper          *WrapperCmd
 }
@@ -237,6 +245,38 @@ func (b *BuildahCli) Build(args *BuildahBuildArgs) error {
 
 	if args.TLSVerify != nil {
 		buildahArgs = append(buildahArgs, fmt.Sprintf("--tls-verify=%t", *args.TLSVerify))
+	}
+
+	if args.Squash {
+		buildahArgs = append(buildahArgs, "--squash")
+	}
+
+	if args.OmitHistory {
+		buildahArgs = append(buildahArgs, "--omit-history")
+	}
+
+	if args.NoCache {
+		buildahArgs = append(buildahArgs, "--no-cache")
+	}
+
+	for _, opt := range args.SecurityOpts {
+		buildahArgs = append(buildahArgs, "--security-opt="+opt)
+	}
+
+	for _, capability := range args.CapAdd {
+		buildahArgs = append(buildahArgs, "--cap-add="+capability)
+	}
+
+	for _, capability := range args.CapDrop {
+		buildahArgs = append(buildahArgs, "--cap-drop="+capability)
+	}
+
+	for _, dev := range args.Devices {
+		buildahArgs = append(buildahArgs, "--device="+dev)
+	}
+
+	for _, ulimit := range args.Ulimits {
+		buildahArgs = append(buildahArgs, "--ulimit="+ulimit)
 	}
 
 	// Append extra arguments before the context directory
