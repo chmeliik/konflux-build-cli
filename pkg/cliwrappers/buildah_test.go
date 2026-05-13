@@ -18,6 +18,8 @@ func setupBuildahCli() (*cliwrappers.BuildahCli, *mockExecutor) {
 	return buildahCli, executor
 }
 
+func boolPtr(b bool) *bool { return &b }
+
 func ensureRetryerDisabled(t *testing.T) {
 	retryerDisabled := cliwrappers.DisableRetryer
 	if !retryerDisabled {
@@ -244,6 +246,37 @@ func TestBuildahCli_Build(t *testing.T) {
 		// Context directory should be the last argument
 		g.Expect(capturedArgs[len(capturedArgs)-1]).To(Equal(contextDir))
 	})
+
+	t.Run("should not pass --tls-verify by default", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedArgs []string
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			capturedArgs = cmd.Args
+			return "", "", 0, nil
+		}
+
+		err := buildahCli.Build(&cliwrappers.BuildahBuildArgs{
+			Containerfile: containerfile, ContextDir: contextDir, OutputRef: outputRef,
+		})
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(capturedArgs).ToNot(ContainElement(ContainSubstring("--tls-verify")))
+	})
+
+	t.Run("should pass --tls-verify=true", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedArgs []string
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			capturedArgs = cmd.Args
+			return "", "", 0, nil
+		}
+
+		err := buildahCli.Build(&cliwrappers.BuildahBuildArgs{
+			Containerfile: containerfile, ContextDir: contextDir, OutputRef: outputRef,
+			TLSVerify: boolPtr(true),
+		})
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(capturedArgs).To(ContainElement("--tls-verify=true"))
+	})
 }
 
 func findDigestFile(args []string) string {
@@ -379,6 +412,28 @@ func TestBuildahCli_Push(t *testing.T) {
 		g.Expect(capturedArgs[len(capturedArgs)-2]).To(Equal(image))
 		g.Expect(capturedArgs[len(capturedArgs)-1]).To(Equal(destination))
 	})
+
+	t.Run("should not pass --tls-verify by default", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedArgs []string
+		executor.executeFunc = mockSuccessfulPush(&capturedArgs)
+
+		_, err := buildahCli.Push(&cliwrappers.BuildahPushArgs{Image: image})
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(capturedArgs).ToNot(ContainElement(ContainSubstring("--tls-verify")))
+	})
+
+	t.Run("should pass --tls-verify=true", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedArgs []string
+		executor.executeFunc = mockSuccessfulPush(&capturedArgs)
+
+		_, err := buildahCli.Push(&cliwrappers.BuildahPushArgs{
+			Image: image, TLSVerify: boolPtr(true),
+		})
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(capturedArgs).To(ContainElement("--tls-verify=true"))
+	})
 }
 
 func TestBuildahCli_Pull(t *testing.T) {
@@ -432,6 +487,34 @@ func TestBuildahCli_Pull(t *testing.T) {
 		err := buildahCli.Pull(pullArgs)
 		g.Expect(err).To(HaveOccurred())
 		g.Expect(err.Error()).To(ContainSubstring("image arg is empty"))
+	})
+
+	t.Run("should not pass --tls-verify by default", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedArgs []string
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			capturedArgs = cmd.Args
+			return "", "", 0, nil
+		}
+
+		err := buildahCli.Pull(&cliwrappers.BuildahPullArgs{Image: image})
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(capturedArgs).ToNot(ContainElement(ContainSubstring("--tls-verify")))
+	})
+
+	t.Run("should pass --tls-verify=true", func(t *testing.T) {
+		buildahCli, executor := setupBuildahCli()
+		var capturedArgs []string
+		executor.executeFunc = func(cmd cliwrappers.Cmd) (string, string, int, error) {
+			capturedArgs = cmd.Args
+			return "", "", 0, nil
+		}
+
+		err := buildahCli.Pull(&cliwrappers.BuildahPullArgs{
+			Image: image, TLSVerify: boolPtr(true),
+		})
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(capturedArgs).To(ContainElement("--tls-verify=true"))
 	})
 }
 

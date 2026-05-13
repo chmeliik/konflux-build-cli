@@ -346,6 +346,20 @@ var BuildParamsConfig = map[string]common.Parameter{
 		TypeKind:     reflect.String,
 		Usage:        "Mount /etc/rhsm/ca from the host machine into the build. Valid values are 'always', 'auto', 'never'.\nSee 'Red Hat Subscription Management' in the help text for more details.",
 	},
+	"src-tls-verify": {
+		Name:         "src-tls-verify",
+		EnvVarName:   "KBC_BUILD_SRC_TLS_VERIFY",
+		TypeKind:     reflect.Bool,
+		DefaultValue: "true",
+		Usage:        "Require HTTPS and verify certificates when accessing source registries.",
+	},
+	"dest-tls-verify": {
+		Name:         "dest-tls-verify",
+		EnvVarName:   "KBC_BUILD_DEST_TLS_VERIFY",
+		TypeKind:     reflect.Bool,
+		DefaultValue: "true",
+		Usage:        "Require HTTPS and verify certificates when pushing to the destination registry.",
+	},
 }
 
 type BuildParams struct {
@@ -391,6 +405,8 @@ type BuildParams struct {
 	RHSMActivationMount        string   `paramName:"rhsm-activation-mount"`
 	RHSMActivationPreregister  bool     `paramName:"rhsm-activation-preregister"`
 	RHSMMountCACerts           string   `paramName:"rhsm-mount-ca-certs"`
+	SrcTLSVerify               bool     `paramName:"src-tls-verify"`
+	DestTLSVerify              bool     `paramName:"dest-tls-verify"`
 	ExtraArgs                  []string // Additional arguments to pass to buildah build
 }
 
@@ -2002,6 +2018,7 @@ func (c *Build) getImageLabels(imageRef string) (map[string]string, error) {
 		Image:     imageRef,
 		HttpProxy: c.Params.ImagePullProxy,
 		NoProxy:   c.Params.ImagePullNoProxy,
+		TLSVerify: &c.Params.SrcTLSVerify,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("pulling image %s: %w", imageRef, err)
@@ -2050,6 +2067,7 @@ func (c *Build) prePullBaseImages(df *dockerfile.Dockerfile) ([]string, error) {
 			Image:     image,
 			HttpProxy: c.Params.ImagePullProxy,
 			NoProxy:   c.Params.ImagePullNoProxy,
+			TLSVerify: &c.Params.SrcTLSVerify,
 		}); err != nil {
 			return nil, fmt.Errorf("pre-pulling image %s: %w", image, err)
 		}
@@ -2205,6 +2223,7 @@ func (c *Build) buildImage() (err error) {
 		InheritLabels:    &c.Params.InheritLabels,
 		Target:           c.Params.Target,
 		SkipUnusedStages: &c.Params.SkipUnusedStages,
+		TLSVerify:        &c.Params.SrcTLSVerify,
 		Wrapper:          c.chooseBuildahWrappers(),
 	}
 	if c.Params.WorkdirMount != "" {
@@ -2290,7 +2309,8 @@ func (c *Build) pushImage() (string, error) {
 	l.Logger.Infof("Pushing image to registry: %s", c.Params.OutputRef)
 
 	pushArgs := &cliWrappers.BuildahPushArgs{
-		Image: c.Params.OutputRef,
+		Image:     c.Params.OutputRef,
+		TLSVerify: &c.Params.DestTLSVerify,
 	}
 
 	digest, err := c.CliWrappers.BuildahCli.Push(pushArgs)

@@ -69,6 +69,7 @@ type BuildahBuildArgs struct {
 	InheritLabels    *bool
 	Target           string
 	SkipUnusedStages *bool
+	TLSVerify        *bool
 	ExtraArgs        []string
 	Wrapper          *WrapperCmd
 }
@@ -234,6 +235,10 @@ func (b *BuildahCli) Build(args *BuildahBuildArgs) error {
 		buildahArgs = append(buildahArgs, fmt.Sprintf("--skip-unused-stages=%t", *args.SkipUnusedStages))
 	}
 
+	if args.TLSVerify != nil {
+		buildahArgs = append(buildahArgs, fmt.Sprintf("--tls-verify=%t", *args.TLSVerify))
+	}
+
 	// Append extra arguments before the context directory
 	buildahArgs = append(buildahArgs, args.ExtraArgs...)
 	// Context directory must be the last argument
@@ -264,6 +269,7 @@ func (b *BuildahCli) Build(args *BuildahBuildArgs) error {
 type BuildahPushArgs struct {
 	Image       string
 	Destination string
+	TLSVerify   *bool
 }
 
 // Push an image from local storage to the registry. Return the digest of the pushed manifest.
@@ -283,7 +289,11 @@ func (b *BuildahCli) Push(args *BuildahPushArgs) (string, error) {
 	}
 	defer func() { _ = os.Remove(digestFile) }()
 
-	buildahArgs := []string{"push", "--digestfile", digestFile, args.Image}
+	buildahArgs := []string{"push", "--digestfile", digestFile}
+	if args.TLSVerify != nil {
+		buildahArgs = append(buildahArgs, fmt.Sprintf("--tls-verify=%t", *args.TLSVerify))
+	}
+	buildahArgs = append(buildahArgs, args.Image)
 	if args.Destination != "" {
 		buildahArgs = append(buildahArgs, args.Destination)
 	}
@@ -317,6 +327,7 @@ type BuildahPullArgs struct {
 	Image     string
 	HttpProxy string // Sets HTTP_PROXY and HTTPS_PROXY for the pull command
 	NoProxy   string // Sets NO_PROXY for the pull command
+	TLSVerify *bool
 }
 
 // Pull an image from the registry to local storage.
@@ -325,7 +336,11 @@ func (b *BuildahCli) Pull(args *BuildahPullArgs) error {
 		return errors.New("image arg is empty")
 	}
 
-	buildahArgs := []string{"pull", args.Image}
+	buildahArgs := []string{"pull"}
+	if args.TLSVerify != nil {
+		buildahArgs = append(buildahArgs, fmt.Sprintf("--tls-verify=%t", *args.TLSVerify))
+	}
+	buildahArgs = append(buildahArgs, args.Image)
 
 	buildahLog.Debugf("Running command:\n%s", shellJoin("buildah", buildahArgs...))
 

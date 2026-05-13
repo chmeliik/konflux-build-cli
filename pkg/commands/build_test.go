@@ -1184,6 +1184,9 @@ func Test_Build_Run(t *testing.T) {
 				Containerfile:  "",
 				Push:           true,
 				SkipInjections: true,
+				// *-tls-verify defaults to true in the CLI
+				SrcTLSVerify:  true,
+				DestTLSVerify: true,
 			},
 			ResultsWriter: _mockResultsWriter,
 		}
@@ -1548,6 +1551,78 @@ func Test_Build_Run(t *testing.T) {
 		g.Expect(capturedRegisterParams.Force).To(BeTrue())
 
 		g.Expect(unregisterCalled).To(BeTrue())
+	})
+
+	t.Run("should pass --src-tls-verify to buildah build and pull", func(t *testing.T) {
+		beforeEach()
+		c.Params.SrcTLSVerify = false
+		os.WriteFile(filepath.Join(c.Params.Context, "Containerfile"), []byte("FROM registry.example.com/base:latest"), 0644)
+
+		pullCalled := false
+		_mockBuildahCli.PullFunc = func(args *cliwrappers.BuildahPullArgs) error {
+			pullCalled = true
+			g.Expect(args.TLSVerify).ToNot(BeNil())
+			g.Expect(*args.TLSVerify).To(BeFalse())
+			return nil
+		}
+
+		buildCalled := false
+		_mockBuildahCli.BuildFunc = func(args *cliwrappers.BuildahBuildArgs) error {
+			buildCalled = true
+			g.Expect(args.TLSVerify).ToNot(BeNil())
+			g.Expect(*args.TLSVerify).To(BeFalse())
+			return nil
+		}
+
+		pushCalled := false
+		_mockBuildahCli.PushFunc = func(args *cliwrappers.BuildahPushArgs) (string, error) {
+			pushCalled = true
+			g.Expect(args.TLSVerify).ToNot(BeNil())
+			g.Expect(*args.TLSVerify).To(BeTrue())
+			return "sha256:abc", nil
+		}
+
+		err := c.Run()
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(pullCalled).To(BeTrue())
+		g.Expect(buildCalled).To(BeTrue())
+		g.Expect(pushCalled).To(BeTrue())
+	})
+
+	t.Run("should pass --dest-tls-verify to buildah push", func(t *testing.T) {
+		beforeEach()
+		c.Params.DestTLSVerify = false
+		os.WriteFile(filepath.Join(c.Params.Context, "Containerfile"), []byte("FROM registry.example.com/base:latest"), 0644)
+
+		pullCalled := false
+		_mockBuildahCli.PullFunc = func(args *cliwrappers.BuildahPullArgs) error {
+			pullCalled = true
+			g.Expect(args.TLSVerify).ToNot(BeNil())
+			g.Expect(*args.TLSVerify).To(BeTrue())
+			return nil
+		}
+
+		buildCalled := false
+		_mockBuildahCli.BuildFunc = func(args *cliwrappers.BuildahBuildArgs) error {
+			buildCalled = true
+			g.Expect(args.TLSVerify).ToNot(BeNil())
+			g.Expect(*args.TLSVerify).To(BeTrue())
+			return nil
+		}
+
+		pushCalled := false
+		_mockBuildahCli.PushFunc = func(args *cliwrappers.BuildahPushArgs) (string, error) {
+			pushCalled = true
+			g.Expect(args.TLSVerify).ToNot(BeNil())
+			g.Expect(*args.TLSVerify).To(BeFalse())
+			return "sha256:abc", nil
+		}
+
+		err := c.Run()
+		g.Expect(err).ToNot(HaveOccurred())
+		g.Expect(pullCalled).To(BeTrue())
+		g.Expect(buildCalled).To(BeTrue())
+		g.Expect(pushCalled).To(BeTrue())
 	})
 }
 
