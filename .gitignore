@@ -8,3 +8,16 @@ coverage.out
 
 zotdata
 .test-containers-storage
+
+# Common gitignore patterns:
+*.exe
+*.test
+*.out
+vendor/
+cover.out
+coverage.txt
+
+*.swo
+*.swp
+
+.DS_Store
