@@ -70,23 +70,14 @@ if rpm -q subscription-manager; then
     exit 1
 fi
 
-# we should not have rhsm/ca before we install subman
-# (we're self-registering, so kbc shouldn't mount the certs)
-if [[ -e /etc/rhsm/ca ]]; then
-    echo "RHSM certs shouldn't exist yet"
-    exit 1
-fi
+# we should already have rhsm/ca before we even install subman
+ls /etc/rhsm/ca
 
-# certs should not be pre-mounted for us
-ls -l /etc/pki/entitlement
+# certs should be pre-mounted for us
+ls /etc/pki/entitlement
 
 microdnf -y install subscription-manager
-subscription-manager status || true
-
-subscription-manager register --activationkey="$(cat /activation-key/activationkey)" --org="$(cat /activation-key/org)"
 subscription-manager status
-
-subscription-manager unregister
 EOF
 
 ENTRYPOINT ["/usr/local/bin/konflux-build-cli"]
