@@ -11,7 +11,7 @@ import (
 	. "github.com/konflux-ci/konflux-build-cli/integration_tests/framework"
 )
 
-const ApplyTagsImage = "quay.io/konflux-ci/task-runner:1.1.1"
+const ApplyTagsImage = "quay.io/konflux-ci/task-runner:1.7.0"
 
 const KonfluxAdditionalTagsLabelName = "konflux.additional-tags"
 

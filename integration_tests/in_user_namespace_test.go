@@ -43,7 +43,7 @@ func TestInUserNamespace(t *testing.T) {
 		SetupGomega(t)
 
 		// Has the /usr/share/rhel/secrets directory
-		testImage := "quay.io/konflux-ci/task-runner:1.4.1"
+		testImage := "quay.io/konflux-ci/task-runner:1.7.0"
 
 		t.Run("disabling works", func(t *testing.T) {
 			SetupGomega(t)

@@ -14,7 +14,7 @@ import (
 	. "github.com/konflux-ci/konflux-build-cli/integration_tests/framework"
 )
 
-const gitCloneRunnerImage = "quay.io/konflux-ci/task-runner:1.1.1"
+const gitCloneRunnerImage = "quay.io/konflux-ci/task-runner:1.7.0"
 
 type gitCloneResult struct {
 	Commit    string `json:"commit"`

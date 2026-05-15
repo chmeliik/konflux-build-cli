@@ -15,7 +15,7 @@ import (
 	. "github.com/konflux-ci/konflux-build-cli/integration_tests/framework"
 )
 
-const TaskRunnerImage = "quay.io/konflux-ci/task-runner:1.3.0"
+const TaskRunnerImage = "quay.io/konflux-ci/task-runner:1.7.0"
 
 func sha256Checksum(input string) string {
 	hash := sha256.New()
