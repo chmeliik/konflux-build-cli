@@ -12,7 +12,7 @@ import (
 	"github.com/konflux-ci/konflux-build-cli/pkg/common"
 )
 
-const BuildImageIndexImage = "quay.io/konflux-ci/task-runner:1.4.1"
+const BuildImageIndexImage = "quay.io/konflux-ci/task-runner:1.7.0"
 
 type BuildImageIndexParams struct {
 	Image         string
