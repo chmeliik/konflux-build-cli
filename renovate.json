@@ -4,7 +4,22 @@
     "config:recommended",
     "helpers:pinGitHubActionDigestsToSemver"
   ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "fileMatch": ["^integration_tests/.*\\.go$"],
+      "matchStrings": ["\"quay\\.io/konflux-ci/task-runner:(?<currentValue>[^@\"]+)(@(?<currentDigest>sha256:[a-f0-9]+))?\""],
+      "depNameTemplate": "quay.io/konflux-ci/task-runner",
+      "datasourceTemplate": "docker",
+      "autoReplaceStringTemplate": "\"quay.io/konflux-ci/task-runner:{{{newValue}}}{{#if newDigest}}@{{{newDigest}}}{{/if}}\""
+    }
+  ],
   "packageRules": [
+    {
+      "description": "Group task-runner updates",
+      "matchPackageNames": ["quay.io/konflux-ci/task-runner"],
+      "groupName": "task-runner"
+    },
     {
       "description": "Go minor updates",
       "matchManagers": ["gomod"],
