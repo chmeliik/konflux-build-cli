@@ -10,3 +10,9 @@ spec:
   - name: test-syft-overlay-dir
     taskRef:
       name: test-syft-overlay-dir
+  - name: test-syft-oci-dir-2gi
+    taskRef:
+      name: test-syft-oci-dir-2gi
+  - name: test-syft-overlay-dir-2gi
+    taskRef:
+      name: test-syft-overlay-dir-2gi

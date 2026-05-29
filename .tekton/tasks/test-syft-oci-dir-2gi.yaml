@@ -1,0 +1,61 @@
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: test-syft-oci-dir-2gi
+spec:
+  description: >
+    Replicate sbom-syft-generate from the buildah task.
+    Pull image, push to OCI dir, scan with oci-dir: provider.
+  volumes:
+    - name: containers-storage
+      emptyDir: {}
+    - name: shared
+      emptyDir: {}
+  steps:
+    - name: test
+      image: quay.io/konflux-ci/task-runner:1.6.0@sha256:1abfe4e50d4e961d0fd9790202565f93ee650fe8dfc50932c94989acba10485f
+      volumeMounts:
+        - name: containers-storage
+          mountPath: /var/lib/containers
+        - name: shared
+          mountPath: /shared
+      computeResources:
+        requests:
+          memory: 2Gi
+          cpu: 1100m
+        limits:
+          memory: 2Gi
+          cpu: 1100m
+      securityContext:
+        runAsUser: 0
+        capabilities:
+          add:
+            - SETFCAP
+      script: |
+        #!/bin/bash
+        set -euo pipefail
+
+        microdnf -y install time
+
+        testimage=quay.io/redhat-user-workloads/ramalama-tenant/rocm-tools:f522c7fabbf9e690fa708b67d53b153c12cd34d5-linux-d160-m4xlarge-amd64
+
+        buildah pull "$testimage"
+        buildah push "$testimage" oci:/shared/image:"$testimage"
+
+        /usr/bin/time -v \
+          syft scan "oci-dir:/shared/image" \
+            -o spdx-json@2.3=/shared/sbom-image.json \
+            2> time.txt &
+        pid=$!
+
+        peak_tmp=0
+        while kill -0 "$pid" 2>/dev/null; do
+          cur=$(du -sk /tmp 2>/dev/null | cut -f1)
+          [ "$cur" -gt "$peak_tmp" ] && peak_tmp=$cur
+          sleep 5
+        done
+        wait "$pid" && rc=0 || rc=$?
+
+        echo "=== Results (exit=$rc) ==="
+        grep -E '(Maximum resident|wall clock)' time.txt || true
+        echo "Peak /tmp: $((peak_tmp / 1024)) MiB"
