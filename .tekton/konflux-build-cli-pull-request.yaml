@@ -2,7 +2,7 @@ apiVersion: tekton.dev/v1
 kind: PipelineRun
 metadata:
   annotations:
-    build.appstudio.openshift.io/repo: https://github.com/konflux-ci/konflux-build-cli?rev={{revision}}
+    build.appstudio.openshift.io/repo: https://github.com/chmeliik/konflux-build-cli?rev={{revision}}
     build.appstudio.redhat.com/commit_sha: '{{revision}}'
     build.appstudio.redhat.com/pull_request_number: '{{pull_request_number}}'
     build.appstudio.redhat.com/target_branch: '{{target_branch}}'
@@ -12,11 +12,11 @@ metadata:
       == "main"
   creationTimestamp: null
   labels:
-    appstudio.openshift.io/application: konflux-build-cli
+    appstudio.openshift.io/application: kbc
     appstudio.openshift.io/component: konflux-build-cli
     pipelines.appstudio.openshift.io/type: build
   name: konflux-build-cli-on-pull-request
-  namespace: rhtap-build-tenant
+  namespace: acmiel-tenant
 spec:
   params:
   - name: git-url
@@ -24,12 +24,13 @@ spec:
   - name: revision
     value: '{{revision}}'
   - name: output-image
-    value: quay.io/redhat-user-workloads/rhtap-build-tenant/konflux-build-cli:on-pr-{{revision}}
+    value: quay.io/redhat-user-workloads-stage/acmiel-tenant/konflux-build-cli:on-pr-{{revision}}
   - name: image-expires-after
     value: 5d
   - name: build-platforms
     value:
     - linux/x86_64
+    - linux/arm64
   - name: dockerfile
     value: Dockerfile
   - name: path-context
