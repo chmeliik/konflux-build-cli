@@ -35,6 +35,8 @@ USER 65532:65532
 # https://access.redhat.com/documentation/en-us/red_hat_software_certification/2024/html-single/red_hat_openshift_software_certification_policy_guide/index#assembly-requirements-for-container-images_openshift-sw-cert-policy-introduction
 COPY LICENSE /licenses/LICENSE
 
+COPY --from=quay.io/devfile/python:slim /etc/os-release /tmp/foo
+
 LABEL description="Konflux Build CLI"
 LABEL io.k8s.description="Konflux Build CLI"
 LABEL io.k8s.display-name="konflux-build-cli"
