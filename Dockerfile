@@ -1,11 +1,13 @@
+FROM registry.fedoraproject.org/fedora-minimal:42 AS unused-fedora
+
+RUN echo "Why is this here? Just to ~suffer~ test skip-unused-stages=false?"
+
 # Build the Konflux Build CLI binary.
 # For more details and updates, refer to
 # https://catalog.redhat.com/en/software/containers/rhel10/go-toolset/6707d40f27f63a06f78743c4
 FROM registry.access.redhat.com/ubi10/go-toolset:1.25@sha256:182645783ad0a0af4a78d928f2d9167815d59c12cc156aa3c229cf3a49d636d9 AS builder
 ARG TARGETOS
 ARG TARGETARCH
-
-USER 1001
 
 WORKDIR /workspace
 # Copy the Go Modules manifests
@@ -42,5 +44,40 @@ LABEL io.openshift.tags="konflux, build, cli"
 LABEL summary="Konflux Build CLI"
 LABEL name="konflux-build-cli"
 LABEL com.redhat.component="konflux-build-cli"
+
+ARG BUILDARG_FROM_PARAM_1
+ARG BUILDARG_FROM_PARAM_2
+ARG BUILDARG_FROM_FILE_1
+ARG BUILDARG_FROM_FILE_2
+
+LABEL arg.from.param.1=$BUILDARG_FROM_PARAM_1
+LABEL arg.from.param.2=$BUILDARG_FROM_PARAM_2
+LABEL arg.from.file.1=$BUILDARG_FROM_FILE_1
+LABEL arg.from.file.2=$BUILDARG_FROM_FILE_2
+LABEL env.from.param.1=$ENV_FROM_PARAM_1
+LABEL env.from.param.2=$ENV_FROM_PARAM_2
+
+RUN --mount=type=secret,id=pipelines-as-code-secret/password \
+    stat /run/secrets/pipelines-as-code-secret/password
+
+USER root
+
+RUN <<EOF
+set -euo pipefail
+
+if rpm -q subscription-manager; then
+    echo subscription-manager should not be installed yet
+    exit 1
+fi
+
+# we should already have rhsm/ca before we even install subman
+ls /etc/rhsm/ca
+
+# certs should be pre-mounted for us
+ls /etc/pki/entitlement
+
+microdnf -y install subscription-manager
+subscription-manager status
+EOF
 
 ENTRYPOINT ["/usr/local/bin/konflux-build-cli"]
