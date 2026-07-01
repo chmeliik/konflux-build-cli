@@ -40,15 +40,6 @@ spec:
   #   value: '{"path": ".", "type": "gomod"}'
   pipelineRef:
     name: build-pipeline
-  taskRunSpecs:
-  - pipelineTaskName: build-image-index
-    stepSpecs:
-    - name: this-step-does-not-exist
-      computeResources:
-        requests:
-          memory: 10Gi
-        limits:
-          memory: 10Gi
   taskRunTemplate:
     serviceAccountName: build-pipeline-konflux-build-cli
   workspaces:
