@@ -1,0 +1,24 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  annotations:
+    build.appstudio.openshift.io/repo: https://github.com/konflux-ci/konflux-build-cli?rev={{revision}}
+    build.appstudio.redhat.com/commit_sha: '{{revision}}'
+    build.appstudio.redhat.com/pull_request_number: '{{pull_request_number}}'
+    build.appstudio.redhat.com/target_branch: '{{target_branch}}'
+    pipelinesascode.tekton.dev/cancel-in-progress: "true"
+    pipelinesascode.tekton.dev/max-keep-runs: "3"
+    pipelinesascode.tekton.dev/on-cel-expression: 'true'
+  name: konflux-build-cli-mapt-test-v0-14-4
+  namespace: rhtap-build-tenant
+spec:
+  params:
+    - name: mapt-repo-url
+      value: https://github.com/chmeliik/tekton-integration-catalog
+    - name: mapt-revision
+      value: update-mapt
+  pipelineRef:
+    name: mapt-test
+  taskRunTemplate:
+    serviceAccountName: build-pipeline-konflux-build-cli
+status: {}
