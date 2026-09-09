@@ -1,0 +1,61 @@
+kind: Pipeline
+apiVersion: tekton.dev/v1
+metadata:
+  name: mapt-test
+spec:
+  params:
+    - name: mapt-repo-url
+      default: https://github.com/konflux-ci/tekton-integration-catalog.git
+    - name: mapt-revision
+      default: 7f46023f16f0dfef66be9164bebc1c516f71c601
+    - name: host-access-secret-name
+      type: string
+      description: 'secret name containing the ssh credentials'
+      default: ssh-secrets-$(context.pipelineRun.name)
+  tasks:
+    - name: provision-virtual-machine
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: $(params.mapt-repo-url)
+          - name: revision
+            value: $(params.mapt-revision)
+          - name: pathInRepo
+            value: tasks/mapt-oci/fedora-virtual-machine/provision/0.1/fedora-vm-provision.yaml
+      params:
+        - name: secret-aws-credentials
+          value: mapt-kind-secret
+        - name: id
+          value: $(context.pipelineRun.name)
+        - name: host-access-secret-name
+          value: $(params.host-access-secret-name)
+        - name: tags
+          value: 'owner=konflux-devprod@redhat.com,project=Konflux,created-by=integration-pipeline,component=konflux-build-cli'
+        - name: ownerKind
+          value: PipelineRun
+        - name: ownerName
+          value: $(context.pipelineRun.name)
+        - name: ownerUid
+          value: $(context.pipelineRun.uid)
+        - name: spot
+          value: 'true'
+        - name: debug
+          value: 'false'
+
+  finally:
+    - name: deprovision-virtual-machine
+      taskRef:
+        resolver: git
+        params:
+          - name: url
+            value: $(params.mapt-repo-url)
+          - name: revision
+            value: $(params.mapt-revision)
+          - name: pathInRepo
+            value: tasks/mapt-oci/fedora-virtual-machine/deprovision/0.1/fedora-vm-deprovision.yaml
+      params:
+        - name: secret-aws-credentials
+          value: mapt-kind-secret
+        - name: id
+          value: $(context.pipelineRun.name)
