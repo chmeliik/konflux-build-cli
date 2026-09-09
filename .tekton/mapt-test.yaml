@@ -4,6 +4,8 @@ metadata:
   name: mapt-test
 spec:
   params:
+    - name: compute-families
+      default: ""
     - name: mapt-repo-url
       default: https://github.com/konflux-ci/tekton-integration-catalog.git
     - name: mapt-revision
@@ -42,6 +44,8 @@ spec:
           value: 'true'
         - name: debug
           value: 'false'
+        - name: compute-families
+          value: $(params.compute-families)
 
   finally:
     - name: deprovision-virtual-machine
