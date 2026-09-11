@@ -9,6 +9,10 @@ metadata:
     pipelinesascode.tekton.dev/cancel-in-progress: "true"
     pipelinesascode.tekton.dev/max-keep-runs: "3"
     pipelinesascode.tekton.dev/on-cel-expression: 'true'
+  labels:
+    appstudio.openshift.io/application: konflux-build-cli
+    appstudio.openshift.io/component: konflux-build-cli
+    pipelines.appstudio.openshift.io/type: build
   name: konflux-build-cli-mapt-test-v0-9-9
   namespace: rhtap-build-tenant
 spec:
