@@ -43,7 +43,7 @@ spec:
         - name: spot
           value: 'true'
         - name: debug
-          value: 'false'
+          value: 'true'
         - name: compute-families
           value: $(params.compute-families)
 
