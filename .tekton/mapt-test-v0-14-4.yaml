@@ -22,7 +22,7 @@ spec:
     - name: mapt-revision
       value: update-mapt
     - name: compute-families
-      value: c,m
+      value: m5,m5a,m5d,m6a,m6i
   pipelineRef:
     name: mapt-test
   taskRunTemplate:
