@@ -28,16 +28,17 @@ const (
 type TestRunnerContainer struct {
 	ReplaceEntrypoint bool
 
-	name       string
-	image      string
-	workdir    string
-	user       string
-	privileged bool
-	env        map[string]string
-	volumes    map[string]hostMount // container dir => (host dir, options)
-	ports      map[string]string
-	networks   []string
-	results    map[string]string
+	name          string
+	image         string
+	workdir       string
+	user          string
+	privileged    bool
+	env           map[string]string
+	volumes       map[string]hostMount // container dir => (host dir, options)
+	ports         map[string]string
+	networks      []string
+	results       map[string]string
+	containerArgs []string
 
 	executor cliWrappers.CliExecutorInterface
 
@@ -181,6 +182,17 @@ func WithNetwork(networkName string) ContainerOption {
 	}
 }
 
+func (c *TestRunnerContainer) SetContainerArgs(args ...string) {
+	c.ensureContainerNotStarted()
+	c.containerArgs = args
+}
+
+func WithContainerArgs(args ...string) ContainerOption {
+	return func(c *TestRunnerContainer) {
+		c.SetContainerArgs(args...)
+	}
+}
+
 // ContainerExists checks for container with the same name.
 func (c *TestRunnerContainer) ContainerExists(isRunning bool) (bool, error) {
 	args := []string{"ps", "-q"}
@@ -253,6 +265,7 @@ func (c *TestRunnerContainer) Start() error {
 		args = append(args, "--entrypoint", "sleep", c.image, "infinity")
 	} else {
 		args = append(args, c.image)
+		args = append(args, c.containerArgs...)
 	}
 
 	stdout, stderr, _, err := c.executor.Execute(cliWrappers.Command(containerTool, args...))

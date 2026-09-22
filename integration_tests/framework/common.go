@@ -25,6 +25,16 @@ const (
 	KonfluxBuildCli = "konflux-build-cli"
 	// Keep task-runner image reference in one place, so it's consistent across tests.
 	TaskRunnerImageRef = "quay.io/konflux-ci/task-runner:2.1.0@sha256:c34c933c269e2401bb042fe69e2999cf288331b6586d4f4eca9c845270d9b1f9"
+
+	// Sigstore stack images (from sigstore Helm charts v0.7.31)
+	SigstoreMysqlImage          = "gcr.io/trillian-opensource-ci/db_server@sha256:2a685a38dd0129cceb646c232d285383f614c7e6fa51ff8f512aef78e4298461"
+	SigstoreCreateDBImage       = "ghcr.io/sigstore/scaffolding/createdb@sha256:3cee6c78973b82af6c3c3632bf8d44dafbab1632b3999a7292b170237c5dd5cc"
+	SigstoreTrillianLogSvrImage = "ghcr.io/sigstore/scaffolding/trillian_log_server@sha256:d953a8eb3f9311e55ebee754de234f1f63e4db2d5e76c15326c288fb0887bb11"
+	SigstoreTrillianLogSgnImage = "ghcr.io/sigstore/scaffolding/trillian_log_signer@sha256:51631983a7e6f0b3faeb188c590e65b9793a6a6617e0631f8b4fd68e98d0460e"
+	SigstoreRedisImage          = "docker.io/redis@sha256:148bb5411c184abd288d9aaed139c98123eeb8824c5d3fce03cf721db58066d8"
+	SigstoreRekorImage          = "ghcr.io/sigstore/rekor/rekor-server:v1.5.3@sha256:ef3ac5d318fe8fb50997d6bf3e39c04e8ccc87708ff991e16d74e956f85ca74e"
+	SigstoreFulcioImage         = "ghcr.io/sigstore/fulcio:v1.8.8@sha256:ef72cf56c64b7455ceda5268d1cc801b92992e7ce36b744b40b7761684d60753"
+	SigstoreDexImage            = "docker.io/dexidp/dex:v2.45.1@sha256:8499afd690c437f52301efd2b05b2455da5bd2dfc20332cd697dc9937f808462"
 )
 
 var (

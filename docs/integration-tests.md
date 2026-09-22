@@ -153,3 +153,7 @@ TMPDIR="$(pwd)/.tmpdir" go test -tags exclude_graphdriver_btrfs ./...
 ## References
 
 See also [integration tests design](design/integration-tests.md).
+
+Signing tests run against a local Sigstore deployment. Before relying on them,
+read [Sigstore stack for integration tests](design/sigstore-test-stack.md),
+which describes how that stack differs from a real Kubernetes deployment.
