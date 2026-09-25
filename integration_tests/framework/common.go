@@ -64,6 +64,16 @@ func init() {
 	}
 }
 
+// RequirePodman skips the test unless the tests run with podman.
+func RequirePodman(t *testing.T) {
+	if containerTool != "podman" {
+		t.Skipf(
+			"test requires podman, but the tests run with %q; set KBC_TEST_CONTAINER_TOOL=podman to run it",
+			containerTool,
+		)
+	}
+}
+
 func NewImageRegistry() ImageRegistry {
 	if LocalRegistry {
 		return NewZotRegistry()
