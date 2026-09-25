@@ -131,6 +131,14 @@ Also, image repository for tests should be created before the tests run and **be
 Note, one can start a test which will create the image repository (private by default) and fail (unless run in debug mode),
 then the user needs to switch only the visibility in the image repository settings.
 
+## Keyless signing tests
+
+Keyless signing tests run a local Sigstore stack as a podman pod.
+They don't work with docker, using docker as the container engine skips the tests.
+They needs `openssl` and the ports `3000`, `5555`, `8080` and `8888` free.
+
+See [Sigstore test stack](design/sigstore-test-stack.md) for the design.
+
 ## Logger output and coloring
 
 When running integration tests, logs may show raw ANSI escape codes (e.g., `\x1b[36m`) and escaped
