@@ -1,0 +1,257 @@
+# Local Sigstore stack as a single Pod, for keyless signing integration tests.
+# Inspired by (and uses images from) https://github.com/sigstore/scaffolding.
+#
+# Intended for use with `podman kube play`.
+#
+# All containers share the pod network namespace, so they reach each other on localhost:<port>.
+# The ports the tests need are published to the host under the same numbers,
+# so a URL means the same thing inside and outside the pod.
+#
+# Public and private key values are not part of the manifest,
+# sigstore_stack.go generates them and passes them in with `podman kube play --configmap`.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sigstore-dex-config
+data:
+  config.yaml: |
+    issuer: http://localhost:8888/auth
+    web:
+      http: 0.0.0.0:8888
+    oauth2:
+      responseTypes:
+        - code
+      skipApprovalScreen: true
+    idTokens:
+      validFor: 5m
+    staticClients:
+      - id: fulcio
+        public: true
+        name: fulcio
+        redirectURIs:
+          - http://localhost:5556/callback
+    connectors:
+      - type: mockCallback
+        id: mock
+        name: mock
+    storage:
+      type: memory
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sigstore-fulcio-config
+data:
+  config.yaml: |
+    oidc-issuers:
+      http://localhost:8888/auth:
+        issuer-url: http://localhost:8888/auth
+        client-id: fulcio
+        type: email
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sigstore
+  labels:
+    app: sigstore
+spec:
+  # Containers crash-loop until the services they depend on are ready.
+  restartPolicy: Always
+  containers:
+    # The image bakes Trillian's storage.sql into /docker-entrypoint-initdb.d,
+    # so MYSQL_DATABASE applies the schema on first boot. No createdb job needed.
+    - name: mysql
+      image: gcr.io/trillian-opensource-ci/db_server@sha256:2a685a38dd0129cceb646c232d285383f614c7e6fa51ff8f512aef78e4298461
+      env:
+        - name: MYSQL_ROOT_PASSWORD
+          value: zaphod
+        - name: MYSQL_DATABASE
+          value: test
+        - name: MYSQL_USER
+          value: test
+        - name: MYSQL_PASSWORD
+          value: zaphod
+      ports:
+        - containerPort: 3306
+      volumeMounts:
+        - name: mysql-data
+          mountPath: /var/lib/mysql
+
+    - name: trillian-server
+      image: ghcr.io/sigstore/scaffolding/trillian_log_server:v0.7.37@sha256:5a878e4e4f03790d2dda4b07a551ff9832128b307447d4156255c73690aa2da3
+      args:
+        - --storage_system=mysql
+        - --mysql_uri=test:zaphod@tcp(localhost:3306)/test
+        - --quota_system=noop
+        - --rpc_endpoint=0.0.0.0:8090
+        - --http_endpoint=0.0.0.0:8091
+        - --alsologtostderr
+      ports:
+        - containerPort: 8090
+        - containerPort: 8091
+
+    - name: trillian-signer
+      image: ghcr.io/sigstore/scaffolding/trillian_log_signer:v0.7.37@sha256:28c5ff40963f83ffdf4e2d9ea1e4e2c877c33cfb0ff068f3daad1c1080aad0ac
+      args:
+        - --storage_system=mysql
+        - --mysql_uri=test:zaphod@tcp(localhost:3306)/test
+        - --quota_system=noop
+        - --rpc_endpoint=0.0.0.0:8092
+        - --http_endpoint=0.0.0.0:8093
+        - --force_master
+        # We have just one trillian-signer instance which is always master,
+        # so reduce noise from re-elections.
+        - --master_hold_interval=24h
+        - --alsologtostderr
+      ports:
+        - containerPort: 8092
+        - containerPort: 8093
+
+    - name: redis
+      image: mirror.gcr.io/library/redis:7@sha256:c6eabf748fc7a61dbb5a705c78bcf3d6377b1127a97d0ce965c11c44ba46896f
+      args:
+        - --bind
+        - 0.0.0.0
+        - --appendonly
+        - "yes"
+        - --requirepass
+        - test
+      ports:
+        - containerPort: 6379
+
+    - name: rekor
+      image: ghcr.io/sigstore/rekor/rekor-server:v1.5.3@sha256:ef3ac5d318fe8fb50997d6bf3e39c04e8ccc87708ff991e16d74e956f85ca74e
+      args:
+        - serve
+        - --trillian_log_server.address=localhost
+        - --trillian_log_server.port=8090
+        - --search_index.storage_provider=redis
+        - --redis_server.address=localhost
+        - --redis_server.port=6379
+        - --redis_server.password=test
+        # scaffolding TUF server hardcodes this hostname:
+        # https://github.com/sigstore/scaffolding/blob/4437418988591614264dc821b955a7b5e372002f/tools/tuf/pkg/repo/repo.go#L243
+        - --rekor_server.hostname=rekor.rekor-system.svc
+        - --rekor_server.address=0.0.0.0
+        - --rekor_server.signer=/etc/rekor/rekor.key
+        - --port=3000
+      ports:
+        - containerPort: 3000
+          hostPort: 3000
+      volumeMounts:
+        - name: rekor-keys
+          mountPath: /etc/rekor
+          readOnly: true
+
+    - name: ctfe
+      image: ghcr.io/transparency-dev/tesseract/posix:v0.1.2@sha256:b044edd2388857dfc590381ff526214dfea93c6eeb61f632e58633cac2330935
+      env:
+        # We don't have OTEL deployed, disable the exporters to avoid noise in logs
+        - name: OTEL_TRACES_EXPORTER
+          value: none
+        - name: OTEL_METRICS_EXPORTER
+          value: none
+      args:
+        # scaffolding TUF server hardcodes this hostname:
+        # https://github.com/sigstore/scaffolding/blob/4437418988591614264dc821b955a7b5e372002f/tools/tuf/pkg/repo/repo.go#L251
+        - --origin=ctlog.ctlog-system.svc
+        - --http_endpoint=0.0.0.0:6962
+        - --ext_key_usages=CodeSigning
+        - --private_key=/ctfe-keys/private
+        - --roots_pem_file=/ctfe-keys/fulcio
+        - --storage_dir=/ctfe
+      ports:
+        - containerPort: 6962
+      volumeMounts:
+        - name: ctfe-keys
+          mountPath: /ctfe-keys
+          readOnly: true
+        - name: ctfe-storage
+          mountPath: /ctfe
+
+    - name: dex
+      image: ghcr.io/dexidp/dex:v2.45.1@sha256:8499afd690c437f52301efd2b05b2455da5bd2dfc20332cd697dc9937f808462
+      args:
+        - dex
+        - serve
+        - /etc/dex/config.yaml
+      ports:
+        # containerPort must always match hostPort here; the issuer URL configured for Fulcio
+        # must match the --oidc-issuer value used with `cosign sign` from outside the pod.
+        - containerPort: 8888
+          hostPort: 8888
+      volumeMounts:
+        - name: dex-config
+          mountPath: /etc/dex
+          readOnly: true
+
+    - name: fulcio
+      image: ghcr.io/sigstore/fulcio:v1.8.8@sha256:ef72cf56c64b7455ceda5268d1cc801b92992e7ce36b744b40b7761684d60753
+      args:
+        - serve
+        - --ct-log-url=http://localhost:6962
+        - --host=0.0.0.0
+        - --port=5555
+        - --grpc-port=5554
+        # Rekor already binds the default metrics port (2112).
+        - --metrics-port=2113
+        - --ca=fileca
+        - --fileca-cert=/etc/fulcio/root.pem
+        - --fileca-key=/etc/fulcio/root.key
+        - --fileca-key-passwd=
+      ports:
+        - containerPort: 5555
+          hostPort: 5555
+        - containerPort: 5554
+        - containerPort: 2113
+      volumeMounts:
+        - name: fulcio-config
+          mountPath: /etc/fulcio-config
+          readOnly: true
+        - name: fulcio-keys
+          mountPath: /etc/fulcio
+          readOnly: true
+
+    - name: tuf
+      image: ghcr.io/sigstore/scaffolding/server:v0.7.37@sha256:9a2e620e8928580afa6f9c352b4fc94f275f4812931e7d8d9587b340ed9ea9d6
+      args:
+        # We're not in a Kubernetes cluster, don't try to use Secrets.
+        - --no-k8s
+        - --mode=init-and-serve
+        # Every file in --file-dir becomes a TUF target, the usage is deduced from the filename.
+        # https://github.com/sigstore/scaffolding/blob/4437418988591614264dc821b955a7b5e372002f/tools/tuf/pkg/repo/repo.go#L140
+        - --file-dir=/var/run/tuf-secrets
+      ports:
+        - containerPort: 8080
+          hostPort: 8080
+      volumeMounts:
+        - name: tuf-targets
+          mountPath: /var/run/tuf-secrets
+          readOnly: true
+
+  volumes:
+    - name: mysql-data
+      emptyDir: {}
+    - name: ctfe-storage
+      emptyDir: {}
+    - name: dex-config
+      configMap:
+        name: sigstore-dex-config
+    - name: fulcio-config
+      configMap:
+        name: sigstore-fulcio-config
+    # Generated at runtime, supplied with `--configmap`.
+    - name: fulcio-keys
+      configMap:
+        name: sigstore-fulcio-keys
+    - name: rekor-keys
+      configMap:
+        name: sigstore-rekor-keys
+    - name: ctfe-keys
+      configMap:
+        name: sigstore-ctfe-keys
+    - name: tuf-targets
+      configMap:
+        name: sigstore-tuf-targets
