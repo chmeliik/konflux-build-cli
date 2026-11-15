@@ -3,14 +3,14 @@ module github.com/konflux-ci/konflux-build-cli
 go 1.25.0
 
 require (
-	github.com/containerd/platforms v1.0.0-rc.2
+	github.com/containerd/platforms v1.0.0-rc.5
 	github.com/containers/image/v5 v5.36.2
 	github.com/keilerkonzept/dockerfile-json v1.2.2
 	github.com/moby/buildkit v0.19.0
 	github.com/onsi/gomega v1.38.2
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
-	github.com/package-url/packageurl-go v0.1.5
+	github.com/package-url/packageurl-go v0.1.7
 	github.com/sirupsen/logrus v1.9.3
 	github.com/spf13/cobra v1.9.1
 	github.com/vishvananda/netlink v1.3.1
